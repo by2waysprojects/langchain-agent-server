@@ -13,24 +13,31 @@ You bring your project code. This framework provides:
 5. **A container** that runs as a non-root user with everything pre-installed.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Container                                          │
-│                                                     │
-│  ┌───────────────┐     ┌──────────────────────────┐ │
-│  │ AGENTS.md     │────>│ Claude Agent             │ │
-│  │ (your prompt) │     │                          │ │
-│  └───────────────┘     │  tools:                  │ │
-│                        │  ├─ SecureShellTool      │ │
-│  ┌───────────────┐     │  ├─ FileManagementToolkit│ │
-│  │ Your project  │<────│  └─ Your custom tools    │ │
-│  │ code + CLIs   │     └──────────────────────────┘ │
-│  └───────────────┘              ▲                   │
-│                                 │                   │
-│                        ┌────────┴───────┐           │
-│                        │ Human (REPL)   │           │
-│                        │ approves writes│           │
-│                        └────────────────┘           │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Container                                           │
+│                                                      │
+│  ┌───────────────┐      ┌──────────────────────────┐ │
+│  │ AGENTS.md     │─────>│ Claude Agent             │ │
+│  │ (your prompt) │      │                          │ │
+│  └───────────────┘      │  tools:                  │ │
+│                         │  ├─ SecureShellTool      │ │
+│  ┌───────────────┐      │  ├─ FileManagementToolkit│ │
+│  │ Your project  │<─────│  └─ Your custom tools    │ │
+│  │ code + CLIs   │      └─────┬──────────┬─────────┘ │
+│  └───────────────┘            │          │           │
+│                               │          │           │
+│                    ┌──────────┴──┐ ┌─────┴─────────┐ │
+│                    │ CLI (REPL)  │ │ API (future)  │ │
+│                    │ human-in-   │ │ HTTP/WebSocket│ │
+│                    │ the-loop    │ │ not yet impl. │ │
+│                    └─────────────┘ └───────┬───────┘ │
+│                                            │ :port   │
+└────────────────────────────────────────────┼─────────┘
+                                             │
+                                  ┌──────────┴─────────┐
+                                  │ External clients   │
+                                  │ (web app, bot, CI) │
+                                  └────────────────────┘
 ```
 
 ## Integration Guide
