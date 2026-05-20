@@ -1,0 +1,58 @@
+FROM python:3.11-slim AS base
+
+# ── System dependencies ──────────────────────────────────────────────
+# Add any system packages your project needs (e.g. kubectl, skopeo)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl jq && \
+    rm -rf /var/lib/apt/lists/*
+
+# Optional: install gh (GitHub CLI)
+ARG GH_VERSION=2.90.0
+RUN curl -fsSL -o /tmp/gh.tar.gz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" && \
+    tar xzf /tmp/gh.tar.gz --strip-components=1 -C /usr/local && \
+    rm /tmp/gh.tar.gz
+
+# ── Python dependencies ─────────────────────────────────────────────
+WORKDIR /app
+COPY requirements-agent.txt ./
+RUN pip install --no-cache-dir -r requirements-agent.txt
+
+# ── Your project dependencies ───────────────────────────────────────
+# If your project has its own requirements.txt or pyproject.toml,
+# install them here so the agent can import your code:
+#
+# COPY pyproject.toml ./
+# RUN pip install --no-cache-dir .
+#
+# COPY requirements.txt ./
+# RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Application code ────────────────────────────────────────────────
+COPY agent_server/ agent_server/
+COPY AGENTS.md .
+COPY STARTUP.md .
+
+# ── Your project code ──────────────────────────────────────────────
+# Copy any project-specific code, scripts, or data the agent needs:
+#
+# COPY my_project/ my_project/
+# COPY scripts/ scripts/
+# COPY templates/ templates/
+# COPY configs/ configs/
+
+# ── Non-root user ───────────────────────────────────────────────────
+RUN groupadd -r agentuser \
+ && useradd -r -g agentuser -m -d /home/agentuser -s /bin/bash agentuser \
+ && mkdir -p /app/workspace \
+ && chown -R agentuser:agentuser /app /home/agentuser
+
+USER agentuser
+
+# ── Runtime defaults ────────────────────────────────────────────────
+ENV AGENT_WORKSPACE_DIR=/app/workspace
+ENV AGENT_INSTRUCTIONS_PATH=/app/AGENTS.md
+ENV AGENT_STARTUP_PROMPT_PATH=/app/STARTUP.md
+ENV PYTHONUNBUFFERED=1
+
+ENTRYPOINT ["python", "-m", "agent_server"]
