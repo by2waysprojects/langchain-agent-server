@@ -8,36 +8,37 @@ You bring your project code. This framework provides:
 
 1. **A secure shell** with a whitelist-based command policy (free / confirm / everything else blocked).
 2. **Sandboxed file operations** confined to a workspace directory.
-3. **Two markdown files** that control the agent: `AGENTS.md` (system prompt) and `STARTUP.md` (boot behavior).
+3. **Two markdown files** that control the agent: `AGENTS.md` (system prompt + scheduled tasks) and `STARTUP.md` (boot behavior).
 4. **An interactive REPL** where a human supervises the agent and approves write operations.
-5. **A container** that runs as a non-root user with everything pre-installed.
+5. **A clock scheduler** that runs agent tasks on a cron schedule -- no human needed.
+6. **A container** that runs as a non-root user with everything pre-installed.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Container                                           │
-│                                                      │
-│  ┌───────────────┐      ┌──────────────────────────┐ │
-│  │ AGENTS.md     │─────>│ Claude Agent             │ │
-│  │ (your prompt) │      │                          │ │
-│  └───────────────┘      │  tools:                  │ │
-│                         │  ├─ SecureShellTool      │ │
-│  ┌───────────────┐      │  ├─ FileManagementToolkit│ │
-│  │ Your project  │<─────│  └─ Your custom tools    │ │
-│  │ code + CLIs   │      └─────┬──────────┬─────────┘ │
-│  └───────────────┘            │          │           │
-│                               │          │           │
-│                    ┌──────────┴──┐ ┌─────┴─────────┐ │
-│                    │ CLI (REPL)  │ │ API (future)  │ │
-│                    │ human-in-   │ │ HTTP/WebSocket│ │
-│                    │ the-loop    │ │ not yet impl. │ │
-│                    └─────────────┘ └───────┬───────┘ │
-│                                            │ :port   │
-└────────────────────────────────────────────┼─────────┘
-                                             │
-                                  ┌──────────┴─────────┐
-                                  │ External clients   │
-                                  │ (web app, bot, CI) │
-                                  └────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Container                                                      │
+│                                                                 │
+│  ┌───────────────┐      ┌───────────────────────────┐           │
+│  │ AGENTS.md     │─────>│ Claude Agent              │           │
+│  │ (your prompt) │      │                           │           │
+│  └───────────────┘      │  tools:                   │           │
+│                         │  ├─ SecureShellTool       │           │
+│  ┌───────────────┐      │  ├─ FileManagementToolkit │           │
+│  │ Your project  │<─────│  └─ Your custom tools     │           │
+│  │ code + CLIs   │      └──┬──────────┬──────────┬──┘           │
+│  └───────────────┘         │          │          │              │
+│                            │          │          │              │
+│              ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐│
+│              │ CLI (REPL)   │ │ API (future)  │ │ Clock       ││
+│              │ human-in-    │ │ HTTP/WebSocket│ │ scheduled   ││
+│              │ the-loop     │ │ not yet impl. │ │ tasks       ││
+│              └──────────────┘ └───────┬───────┘ └─────────────┘│
+│                                       │ :port                   │
+└───────────────────────────────────────┼─────────────────────────┘
+                                        │
+                             ┌──────────┴─────────┐
+                             │ External clients   │
+                             │ (web app, bot, CI) │
+                             └────────────────────┘
 ```
 
 ## Integration Guide
@@ -61,11 +62,14 @@ your-project/
     │   ├── api/
     │   │   ├── __init__.py
     │   │   └── app.py           # Not yet implemented
+    │   ├── clock/
+    │   │   ├── __init__.py
+    │   │   └── main.py          # Periodic task scheduler
     │   └── tools/
     │       ├── __init__.py
     │       ├── shell_policy.py
     │       └── filesystem.py
-    ├── AGENTS.md                # <-- edit this (your agent's instructions)
+    ├── AGENTS.md                # <-- edit this (instructions + scheduled tasks)
     ├── STARTUP.md               # <-- edit this (boot behavior)
     ├── Dockerfile               # <-- customize this for your project
     └── requirements.txt         # Framework dependencies
@@ -156,8 +160,15 @@ You are an AI assistant that helps operate [my system].
 | `my-cli deploy` | Deploy changes | `CONFIRMED: my-cli deploy staging` |
 
 ## Error Handling
+## Scheduled Tasks
+- Every 5 minutes, check system health and report any issues
+- Every weekday at 9am, review open PRs and summarize their status
+
+## Error Handling
 If X fails, do Y ...
 ```
+
+The `## Scheduled Tasks` section is written in plain natural language. At startup, the agent reads it and translates each entry into a cron schedule automatically. Then it executes each task on schedule using all its tools.
 
 **`STARTUP.md`** controls what the agent does on first launch -- typically inspect the environment and greet the user:
 
@@ -197,14 +208,15 @@ RUN curl -LO "https://dl.k8s.io/release/stable.txt" && ...
 # Build
 docker build -f Dockerfile.agent -t my-agent .
 
-# Run interactively
+# Run interactively (CLI mode -- human-in-the-loop)
 docker run -it --rm \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -v ./configs:/app/configs:ro \
   my-agent
+
 ```
 
-The agent will start, run the startup prompt, inspect the environment, and greet the user. From there, the human types instructions and the agent executes them using the tools available -- asking for confirmation before any write operation.
+The agent starts up, resolves any scheduled tasks from `AGENTS.md`, launches the clock in the background, then opens the CLI for the human. Everything in one process, one agent.
 
 ## Security Model
 
@@ -236,7 +248,7 @@ All file operations go through LangChain's `FileManagementToolkit`, sandboxed to
 |----------|----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | Yes | -- | Anthropic API key |
 | `AGENT_MODEL` | No | `claude-4.6-opus` | Model identifier |
-| `AGENT_INSTRUCTIONS_PATH` | No | `AGENTS.md` | Path to system prompt |
+| `AGENT_INSTRUCTIONS_PATH` | No | `AGENTS.md` | Path to system prompt (also contains scheduled tasks) |
 | `AGENT_STARTUP_PROMPT_PATH` | No | `STARTUP.md` | Path to startup prompt |
 | `AGENT_WORKSPACE_DIR` | No | `/app/workspace` | Sandboxed file root |
 | `AGENT_MAX_ITERATIONS` | No | `50` | Max reasoning loops |
@@ -256,11 +268,14 @@ langchain-agent-server/
 │   ├── api/
 │   │   ├── __init__.py
 │   │   └── app.py               # HTTP API (not yet implemented)
+│   ├── clock/
+│   │   ├── __init__.py
+│   │   └── main.py              # Periodic task scheduler
 │   └── tools/
 │       ├── __init__.py
 │       ├── shell_policy.py      # Whitelist + confirm + blocked patterns
 │       └── filesystem.py        # Sandboxed file management
-├── AGENTS.md                    # System prompt (your domain instructions)
+├── AGENTS.md                    # System prompt + scheduled tasks
 ├── STARTUP.md                   # Startup behavior (boot sequence)
 ├── Dockerfile                   # Container definition
 └── requirements.txt             # Framework dependencies

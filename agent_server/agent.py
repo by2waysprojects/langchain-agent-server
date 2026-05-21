@@ -1,9 +1,7 @@
 """Agent factory -- builds a LangGraph agent wired to Claude and tools.
 
-The public entry-point is :func:`build_agent`.  It returns a compiled
-LangGraph graph that can be driven by any interface layer (CLI today,
-FastAPI / WebSocket tomorrow) by calling ``agent.invoke()`` or
-``agent.stream()``.
+This is the single source of truth for agent construction.  All interface
+layers (CLI, Clock, API) import from here instead of building their own.
 """
 
 from __future__ import annotations
@@ -13,6 +11,10 @@ from pathlib import Path
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import BaseTool
+
+from agent_server.config import AgentSettings
+from agent_server.tools.filesystem import get_file_tools
+from agent_server.tools.shell_policy import SecureShellTool
 
 
 def load_system_prompt(path: str | Path) -> str:
@@ -26,6 +28,17 @@ def load_system_prompt(path: str | Path) -> str:
     return filepath.read_text(encoding="utf-8")
 
 
+def build_tools(settings: AgentSettings) -> list[BaseTool]:
+    """Assemble the full tool list from settings.
+
+    Override this function to register project-specific tools
+    (e.g. API query tools, database tools, etc.).
+    """
+    file_tools = get_file_tools(settings.agent_workspace_dir)
+    shell_tool = SecureShellTool()
+    return [*file_tools, shell_tool]
+
+
 def build_agent(
     tools: list[BaseTool],
     system_prompt: str,
@@ -33,20 +46,8 @@ def build_agent(
 ):
     """Construct an agent backed by Anthropic Claude.
 
-    Parameters
-    ----------
-    tools:
-        LangChain tool instances the agent may invoke.
-    system_prompt:
-        Full text injected as the system message (e.g. contents of AGENTS.md).
-    model_name:
-        Anthropic model identifier passed to :class:`ChatAnthropic`.
-
-    Returns
-    -------
-    CompiledStateGraph
-        A LangGraph compiled graph.  Drive it with ``agent.invoke()`` for
-        blocking calls or ``agent.stream()`` for streaming.
+    Returns a LangGraph compiled graph.  Drive it with ``agent.invoke()``
+    for blocking calls or ``agent.stream()`` for streaming.
     """
     llm = ChatAnthropic(
         model=model_name,
@@ -58,3 +59,33 @@ def build_agent(
         tools=tools,
         system_prompt=system_prompt,
     )
+
+
+def create_agent_from_settings(settings: AgentSettings | None = None):
+    """One-call convenience: load config, build tools, build agent.
+
+    Returns ``(agent, settings, system_prompt)`` so callers have
+    everything they need.
+    """
+    if settings is None:
+        settings = AgentSettings()
+
+    system_prompt = load_system_prompt(settings.agent_instructions_path)
+    tools = build_tools(settings)
+    agent = build_agent(
+        tools=tools,
+        system_prompt=system_prompt,
+        model_name=settings.agent_model,
+    )
+    return agent, settings, system_prompt
+
+
+def invoke_agent(agent, messages: list[dict], config: dict) -> str | None:
+    """Send messages to the agent and return the final AI response text."""
+    result = agent.invoke({"messages": messages}, config=config)
+    ai_messages = [
+        m for m in result["messages"] if getattr(m, "type", None) == "ai"
+    ]
+    if ai_messages:
+        return ai_messages[-1].content
+    return None

@@ -103,3 +103,14 @@ Any binary not listed above is automatically rejected. Additionally, the followi
 - **Need to check cluster resources?** --> `kubectl get <resource> -o yaml`
 - **Need API data?** --> `my_api_query` tool
 -->
+
+## Scheduled Tasks
+
+<!-- Define periodic tasks here in natural language. At startup, the agent
+will interpret these and convert them to cron schedules automatically.
+
+- Every 5 minutes, check system health and report any issues
+- Every weekday at 9am, review open PRs and summarize their status
+- Every 2 hours, check disk usage in /app/workspace and warn if above 80%
+
+-->

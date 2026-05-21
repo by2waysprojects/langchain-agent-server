@@ -1,0 +1,204 @@
+"""Periodic task scheduler for the agent server.
+
+At startup, asks the agent to read the ``## Scheduled Tasks`` section of
+its own system prompt and translate natural-language schedules into cron
+expressions.  Then runs a loop that invokes the agent on each matching
+tick as if a human had typed the instruction.
+
+Uses the centralized agent factory in ``agent_server.agent``.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sys
+import uuid
+from dataclasses import dataclass
+from threading import Event, Thread
+
+from agent_server.agent import invoke_agent
+
+logger = logging.getLogger(__name__)
+
+_SECTION_PATTERN = re.compile(
+    r"^##\s+Scheduled\s+Tasks\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+_PARSE_PROMPT = """\
+Your system prompt contains a "## Scheduled Tasks" section with the \
+following content:
+
+---
+{section}
+---
+
+Convert each task into a JSON array. Each element must have:
+- "cron": a standard 5-field cron expression (minute hour day-of-month month day-of-week)
+- "instruction": the task description exactly as written
+
+Reply with ONLY the JSON array, no markdown fences, no explanation.
+
+Example output:
+[{{"cron": "*/5 * * * *", "instruction": "Check system health and report issues"}}]
+"""
+
+
+@dataclass
+class ScheduledTask:
+    cron_expr: str
+    instruction: str
+    thread_id: str
+
+
+def extract_tasks_section(content: str) -> str | None:
+    """Extract the '## Scheduled Tasks' section from markdown content."""
+    match = _SECTION_PATTERN.search(content)
+    if not match:
+        return None
+    start = match.end()
+    next_section = re.search(r"^##\s+", content[start:], re.MULTILINE)
+    if next_section:
+        return content[start:start + next_section.start()]
+    return content[start:]
+
+
+def resolve_tasks(agent, section: str) -> list[ScheduledTask]:
+    """Ask the agent to translate natural-language schedules into cron."""
+    config = {"configurable": {"thread_id": f"clock-init-{uuid.uuid4().hex[:8]}"}}
+    prompt = _PARSE_PROMPT.format(section=section.strip())
+
+    response = invoke_agent(
+        agent,
+        [{"role": "user", "content": prompt}],
+        config,
+    )
+    if not response:
+        return []
+
+    json_match = re.search(r"\[.*\]", response, re.DOTALL)
+    if not json_match:
+        logger.error("Clock: agent did not return valid JSON: %s", response[:200])
+        return []
+
+    try:
+        items = json.loads(json_match.group())
+    except json.JSONDecodeError:
+        logger.error("Clock: could not parse agent response as JSON")
+        return []
+
+    tasks = []
+    for item in items:
+        cron = item.get("cron", "").strip()
+        instruction = item.get("instruction", "").strip()
+        if cron and instruction:
+            tasks.append(ScheduledTask(
+                cron_expr=cron,
+                instruction=instruction,
+                thread_id=uuid.uuid4().hex[:12],
+            ))
+    return tasks
+
+
+def _parse_cron_field(field: str, min_val: int, max_val: int) -> set[int]:
+    values: set[int] = set()
+    for part in field.split(","):
+        if "/" in part:
+            base, step = part.split("/", 1)
+            step = int(step)
+            start = min_val if base == "*" else int(base)
+            values.update(range(start, max_val + 1, step))
+        elif "-" in part:
+            lo, hi = part.split("-", 1)
+            values.update(range(int(lo), int(hi) + 1))
+        elif part == "*":
+            values.update(range(min_val, max_val + 1))
+        else:
+            values.add(int(part))
+    return values
+
+
+def cron_matches_now(cron_expr: str) -> bool:
+    """Return True if *cron_expr* matches the current minute."""
+    import datetime
+
+    fields = cron_expr.split()
+    if len(fields) != 5:
+        return False
+
+    now = datetime.datetime.now()
+    minute, hour, dom, month, dow = fields
+
+    return (
+        now.minute in _parse_cron_field(minute, 0, 59)
+        and now.hour in _parse_cron_field(hour, 0, 23)
+        and now.day in _parse_cron_field(dom, 1, 31)
+        and now.month in _parse_cron_field(month, 1, 12)
+        and now.weekday() in _parse_cron_field(dow, 0, 6)
+    )
+
+
+def _run_task(agent, task: ScheduledTask) -> None:
+    config = {"configurable": {"thread_id": task.thread_id}}
+    label = task.instruction[:50]
+    logger.info("Running scheduled task: %s", label)
+    try:
+        response = invoke_agent(
+            agent,
+            [{"role": "user", "content": task.instruction}],
+            config,
+        )
+        if response:
+            print(f"\n[clock] {label}\n{response}\n")
+    except Exception as exc:
+        logger.error("Scheduled task failed: %s — %s", label, exc)
+        print(f"\n[clock] {label} — Error: {exc}\n", file=sys.stderr)
+
+
+def _run_loop(
+    agent,
+    tasks: list[ScheduledTask],
+    stop_event: Event,
+) -> None:
+    """Main clock loop -- checks every 60s if any task should run."""
+    print(f"\nClock started with {len(tasks)} task(s):")
+    for t in tasks:
+        print(f"  [{t.cron_expr}] {t.instruction}")
+    print()
+
+    while not stop_event.is_set():
+        for task in tasks:
+            if cron_matches_now(task.cron_expr):
+                thread = Thread(
+                    target=_run_task,
+                    args=(agent, task),
+                    daemon=True,
+                )
+                thread.start()
+
+        stop_event.wait(60)
+
+
+def start_clock(agent, system_prompt: str, stop_event: Event) -> None:
+    """Extract tasks, resolve schedules, and start the clock in a background thread.
+
+    Does nothing if no ``## Scheduled Tasks`` section is found.
+    """
+    section = extract_tasks_section(system_prompt)
+    if not section:
+        return
+
+    print("Found scheduled tasks — asking agent to resolve schedules...")
+    tasks = resolve_tasks(agent, section)
+    if not tasks:
+        print("No tasks resolved.\n")
+        return
+
+    thread = Thread(
+        target=_run_loop,
+        args=(agent, tasks, stop_event),
+        daemon=True,
+    )
+    thread.start()
