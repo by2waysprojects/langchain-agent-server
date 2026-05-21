@@ -87,14 +87,18 @@ class MemoryStore:
         )
 
     def save(self, fact: str, *, source: str = "agent") -> str:
-        """Store a fact. Returns the fact id."""
-        entry = {
-            "id": uuid.uuid4().hex[:10],
-            "fact": fact,
-            "source": source,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        """Store a fact. Returns the existing id if a duplicate is found."""
         with self._lock:
+            for f in self._facts:
+                if f["fact"] == fact:
+                    logger.info("Duplicate fact, returning existing id: %s", f["id"])
+                    return f["id"]
+            entry = {
+                "id": uuid.uuid4().hex[:10],
+                "fact": fact,
+                "source": source,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
             self._facts.append(entry)
             self._flush()
         logger.info("Saved fact: %s", fact[:80])
