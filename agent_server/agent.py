@@ -6,8 +6,12 @@ layers (CLI, Clock, API) import from here instead of building their own.
 
 from __future__ import annotations
 
+import sqlite3
+from functools import cached_property
 from pathlib import Path
 
+import anthropic
+import httpx
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import BaseTool
@@ -43,21 +47,112 @@ def build_tools(settings: AgentSettings, memory_store: MemoryStore) -> list[Base
     return [*file_tools, shell_tool, memory_tool]
 
 
+# ---------------------------------------------------------------------------
+# ChatAnthropic subclass for self-signed certs (standard Anthropic API)
+# ---------------------------------------------------------------------------
+
+class _ChatAnthropicSSL(ChatAnthropic):
+    """ChatAnthropic with configurable SSL verification."""
+
+    ssl_verify: bool | str = True
+
+    @cached_property
+    def _client(self) -> anthropic.Anthropic:
+        return anthropic.Anthropic(
+            **self._client_params,
+            http_client=httpx.Client(verify=self.ssl_verify),
+        )
+
+    @cached_property
+    def _async_client(self) -> anthropic.AsyncAnthropic:
+        return anthropic.AsyncAnthropic(
+            **self._client_params,
+            http_client=httpx.AsyncClient(verify=self.ssl_verify),
+        )
+
+
+# ---------------------------------------------------------------------------
+# ChatAnthropic subclass for Vertex-compatible proxies (custom URL + Bearer)
+# ---------------------------------------------------------------------------
+
+class _ChatAnthropicProxy(ChatAnthropic):
+    """ChatAnthropic that calls a Vertex-compatible proxy directly.
+
+    The proxy expects:
+      POST {base_url}/sonnet/models/{model}:streamRawPredict
+      Authorization: Bearer <token>
+      Body: {"anthropic_version": "vertex-2023-10-16", "messages": [...], ...}
+    """
+
+    proxy_url: str = ""
+    proxy_key: str = ""
+    ssl_verify: bool = True
+
+    def _create(self, payload: dict) -> anthropic.types.Message:
+        model = payload.pop("model", self.model)
+        payload["anthropic_version"] = "vertex-2023-10-16"
+
+        url = f"{self.proxy_url.rstrip('/')}/sonnet/models/{model}:streamRawPredict"
+        client = httpx.Client(verify=self.ssl_verify)
+        resp = client.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {self.proxy_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=600,
+        )
+        resp.raise_for_status()
+        return anthropic.types.Message(**resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Agent construction
+# ---------------------------------------------------------------------------
+
 def build_agent(
     tools: list[BaseTool],
     system_prompt: str,
-    model_name: str = "claude-4.6-opus",
+    settings: AgentSettings,
     checkpointer=None,
 ):
     """Construct an agent backed by Anthropic Claude.
 
-    Returns a LangGraph compiled graph.  Drive it with ``agent.invoke()``
-    for blocking calls or ``agent.stream()`` for streaming.
+    Branches on ``settings.agent_api_provider``:
+    - ``"anthropic"``: standard Anthropic API (``ChatAnthropic``)
+    - ``"vertex"``: Vertex-compatible proxy (``ChatAnthropicVertex``)
     """
-    llm = ChatAnthropic(
-        model=model_name,
-        max_tokens=8192,
-    )
+    provider = settings.agent_api_provider.lower()
+
+    if provider == "vertex":
+        if not settings.agent_api_url:
+            raise ValueError("AGENT_API_URL is required when provider is 'vertex'")
+        llm = _ChatAnthropicProxy(
+            model=settings.agent_model,
+            max_tokens=8192,
+            api_key="unused",
+            proxy_url=settings.agent_api_url,
+            proxy_key=settings.agent_api_key,
+            ssl_verify=settings.agent_api_verify_ssl,
+        )
+    elif provider == "anthropic":
+        kwargs: dict = {
+            "model": settings.agent_model,
+            "max_tokens": 8192,
+            "api_key": settings.agent_api_key,
+        }
+        if settings.agent_api_url:
+            kwargs["base_url"] = settings.agent_api_url
+        if not settings.agent_api_verify_ssl:
+            kwargs["ssl_verify"] = False
+            llm = _ChatAnthropicSSL(**kwargs)
+        else:
+            llm = ChatAnthropic(**kwargs)
+    else:
+        raise ValueError(
+            f"Unknown provider '{provider}'. Use 'anthropic' or 'vertex'."
+        )
 
     return create_agent(
         model=llm,
@@ -77,12 +172,13 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
 
     system_prompt = load_system_prompt(settings.agent_instructions_path)
     memory_store = MemoryStore(path=settings.agent_memory_path)
-    checkpointer = SqliteSaver.from_conn_string(settings.agent_checkpoints_path)
+    conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
     tools = build_tools(settings, memory_store)
     agent = build_agent(
         tools=tools,
         system_prompt=system_prompt,
-        model_name=settings.agent_model,
+        settings=settings,
         checkpointer=checkpointer,
     )
     return agent, settings, system_prompt, memory_store

@@ -74,14 +74,14 @@ class MemoryTool(BaseTool):
         results = self._store.recall(query)
         if not results:
             return f"No facts found matching '{query}'."
-        lines = [f"  [{r['id']}] {r['fact']}" for r in results]
+        lines = [f"  [{r['id']}] ({r.get('timestamp', '?')}) {r['fact']}" for r in results]
         return f"Found {len(results)} fact(s):\n" + "\n".join(lines)
 
     def _list(self) -> str:
         facts = self._store.list_all()
         if not facts:
             return "No facts stored yet."
-        lines = [f"  [{f['id']}] {f['fact']}" for f in facts]
+        lines = [f"  [{f['id']}] ({f.get('timestamp', '?')}) {f['fact']}" for f in facts]
         return f"{len(facts)} fact(s) in memory:\n" + "\n".join(lines)
 
     def _forget(self, params: dict) -> str:

@@ -212,10 +212,19 @@ RUN curl -LO "https://dl.k8s.io/release/stable.txt" && ...
 # Build
 docker build -f Dockerfile.agent -t my-agent .
 
-# Run interactively (CLI mode -- human-in-the-loop)
+# Run with standard Anthropic API
 docker run -it --rm \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e AGENT_API_KEY=sk-ant-... \
   -v ./configs:/app/configs:ro \
+  my-agent
+
+# Run with Vertex-compatible proxy (e.g. corporate gateway)
+docker run -it --rm \
+  -e AGENT_API_KEY=your-bearer-token \
+  -e AGENT_API_URL=https://your-proxy.example.com:443 \
+  -e AGENT_API_PROVIDER=vertex \
+  -e AGENT_API_VERIFY_SSL=false \
+  -e AGENT_MODEL=claude-sonnet-4-6 \
   my-agent
 
 ```
@@ -250,8 +259,11 @@ All file operations go through LangChain's `FileManagementToolkit`, sandboxed to
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | -- | Anthropic API key |
-| `AGENT_MODEL` | No | `claude-4.6-opus` | Model identifier |
+| `AGENT_API_KEY` | Yes | -- | API key (Anthropic) or Bearer token (Vertex proxy) |
+| `AGENT_API_URL` | No | -- | Base URL for the API endpoint |
+| `AGENT_API_PROVIDER` | No | `anthropic` | `anthropic` (standard) or `vertex` (Vertex-compatible proxy) |
+| `AGENT_API_VERIFY_SSL` | No | `true` | Verify SSL certs (set `false` for self-signed) |
+| `AGENT_MODEL` | No | `claude-sonnet-4-20250514` | Model identifier |
 | `AGENT_INSTRUCTIONS_PATH` | No | `AGENTS.md` | Path to system prompt (also contains scheduled tasks) |
 | `AGENT_STARTUP_PROMPT_PATH` | No | `STARTUP.md` | Path to startup prompt |
 | `AGENT_MEMORY_PATH` | No | `/app/workspace/memory.json` | Long-term memory file |

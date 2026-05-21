@@ -10,22 +10,37 @@ class AgentSettings(BaseSettings):
     """Settings for the agent server, sourced from environment variables.
 
     Required:
-        ANTHROPIC_API_KEY  -- Anthropic API key (never stored in code).
+        AGENT_API_KEY  -- API key or Bearer token (never stored in code).
 
     Optional (with defaults):
-        AGENT_MODEL              -- Model identifier for ChatAnthropic.
+        AGENT_API_URL            -- Base URL for the API endpoint.
+        AGENT_API_PROVIDER       -- "anthropic" (standard) or "vertex" (Vertex-compatible proxy).
+        AGENT_API_VERIFY_SSL     -- Verify SSL certificates (False for self-signed).
+        AGENT_MODEL              -- Model identifier.
         AGENT_INSTRUCTIONS_PATH  -- Path to the system-prompt markdown file.
         AGENT_WORKSPACE_DIR      -- Root directory for sandboxed file operations.
         AGENT_MAX_ITERATIONS     -- Safety cap on agent reasoning loops.
     """
 
-    anthropic_api_key: str = Field(
+    agent_api_key: str = Field(
         ...,
-        description="Anthropic API key",
+        description="API key (Anthropic) or Bearer token (Vertex proxy)",
+    )
+    agent_api_url: str | None = Field(
+        default=None,
+        description="Base URL for the API endpoint (e.g. proxy or compatible endpoint)",
+    )
+    agent_api_provider: str = Field(
+        default="anthropic",
+        description="API provider: 'anthropic' (standard) or 'vertex' (Vertex-compatible proxy)",
+    )
+    agent_api_verify_ssl: bool = Field(
+        default=True,
+        description="Verify SSL certificates (set False for self-signed certs)",
     )
     agent_model: str = Field(
-        default="claude-4.6-opus",
-        description="Anthropic model identifier",
+        default="claude-sonnet-4-20250514",
+        description="Model identifier (override with AGENT_MODEL env var)",
     )
     agent_instructions_path: str = Field(
         default="AGENTS.md",

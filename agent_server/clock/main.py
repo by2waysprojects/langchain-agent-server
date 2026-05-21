@@ -12,14 +12,41 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
-import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 
 from agent_server.agent import invoke_agent
 from agent_server.memory import MemoryStore
+
+_fd_lock = Lock()
+
+
+@contextmanager
+def _suppress_fd():
+    """Suppress stdout/stderr at OS fd level for the duration of the block.
+
+    Uses a lock so only one clock task redirects fds at a time, avoiding
+    races with the CLI thread's normal output.
+    """
+    with _fd_lock:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        saved_out = os.dup(1)
+        saved_err = os.dup(2)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+    try:
+        yield
+    finally:
+        with _fd_lock:
+            os.dup2(saved_out, 1)
+            os.dup2(saved_err, 2)
+            os.close(saved_out)
+            os.close(saved_err)
+            os.close(devnull)
 
 CLOCK_THREAD_ID = "2"
 
@@ -72,11 +99,12 @@ def resolve_tasks(agent, section: str) -> list[ScheduledTask]:
     config = {"configurable": {"thread_id": f"clock-init-{uuid.uuid4().hex[:8]}"}}
     prompt = _PARSE_PROMPT.format(section=section.strip())
 
-    response = invoke_agent(
-        agent,
-        [{"role": "user", "content": prompt}],
-        config,
-    )
+    with _suppress_fd():
+        response = invoke_agent(
+            agent,
+            [{"role": "user", "content": prompt}],
+            config,
+        )
     if not response:
         return []
 
@@ -143,17 +171,16 @@ def _run_task(agent, task: ScheduledTask, memory_store: MemoryStore | None) -> N
     label = task.instruction[:50]
     logger.info("Running scheduled task: %s", label)
     try:
-        response = invoke_agent(
-            agent,
-            [{"role": "user", "content": task.instruction}],
-            config,
-            memory_store=memory_store,
-        )
-        if response:
-            print(f"\n[clock] {label}\n{response}\n")
+        with _suppress_fd():
+            invoke_agent(
+                agent,
+                [{"role": "user", "content": task.instruction}],
+                config,
+                memory_store=memory_store,
+            )
+        logger.info("Task completed: %s", label)
     except Exception as exc:
         logger.error("Scheduled task failed: %s — %s", label, exc)
-        print(f"\n[clock] {label} — Error: {exc}\n", file=sys.stderr)
 
 
 def _run_loop(
@@ -163,10 +190,9 @@ def _run_loop(
     memory_store: MemoryStore | None,
 ) -> None:
     """Main clock loop -- checks every 60s if any task should run."""
-    print(f"\nClock started with {len(tasks)} task(s):")
+    logger.info("Clock started with %d task(s)", len(tasks))
     for t in tasks:
-        print(f"  [{t.cron_expr}] {t.instruction}")
-    print()
+        logger.info("  [%s] %s", t.cron_expr, t.instruction)
 
     while not stop_event.is_set():
         for task in tasks:
@@ -193,10 +219,10 @@ def start_clock(
     if not section:
         return
 
-    print("Found scheduled tasks — asking agent to resolve schedules...")
+    logger.info("Found scheduled tasks — resolving schedules...")
     tasks = resolve_tasks(agent, section)
     if not tasks:
-        print("No tasks resolved.\n")
+        logger.warning("No tasks resolved.")
         return
 
     thread = Thread(
