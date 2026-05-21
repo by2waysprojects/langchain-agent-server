@@ -27,11 +27,11 @@ You bring your project code. This framework provides:
 │  │ code + CLIs   │      └──┬──────────┬──────────┬──┘           │
 │  └───────────────┘         │          │          │              │
 │                            │          │          │              │
-│              ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐│
-│              │ CLI (REPL)   │ │ API (future)  │ │ Clock       ││
-│              │ human-in-    │ │ HTTP/WebSocket│ │ scheduled   ││
-│              │ the-loop     │ │ not yet impl. │ │ tasks       ││
-│              └──────────────┘ └───────┬───────┘ └─────────────┘│
+│              ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐ │
+│              │ CLI (REPL)   │ │ API (future)  │ │ Clock       │ │
+│              │ human-in-    │ │ HTTP/WebSocket│ │ scheduled   │ │
+│              │ the-loop     │ │ not yet impl. │ │ tasks       │ │
+│              └──────────────┘ └───────┬───────┘ └─────────────┘ │
 │                                       │ :port                   │
 └───────────────────────────────────────┼─────────────────────────┘
                                         │
