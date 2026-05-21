@@ -6,7 +6,10 @@ layers (CLI, Clock, API) import from here instead of building their own.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import uuid
+from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
 
@@ -16,6 +19,8 @@ from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+logger = logging.getLogger(__name__)
 
 from agent_server.config import AgentSettings
 from agent_server.memory import MemoryStore
@@ -162,6 +167,49 @@ def build_agent(
     )
 
 
+def _uuid1_timestamp(uid: str) -> datetime | None:
+    """Extract the timestamp from a UUID-v1 checkpoint_id."""
+    try:
+        u = uuid.UUID(uid)
+        if u.version != 1:
+            return None
+        # UUID-v1 timestamp is 100-ns intervals since 1582-10-15
+        epoch_100ns = u.time - 0x01B21DD213814000
+        return datetime.fromtimestamp(epoch_100ns / 1e7, tz=timezone.utc)
+    except (ValueError, AttributeError, OverflowError):
+        return None
+
+
+def _purge_old_checkpoints(conn: sqlite3.Connection, ttl_days: int) -> None:
+    """Delete checkpoint and write rows older than *ttl_days*."""
+    if ttl_days <= 0:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+    cursor = conn.execute(
+        "SELECT thread_id, checkpoint_ns, checkpoint_id FROM checkpoints"
+    )
+    to_delete: list[tuple[str, str, str]] = []
+    for thread_id, ns, cid in cursor.fetchall():
+        ts = _uuid1_timestamp(cid)
+        if ts is not None and ts < cutoff:
+            to_delete.append((thread_id, ns, cid))
+
+    if not to_delete:
+        return
+
+    for thread_id, ns, cid in to_delete:
+        conn.execute(
+            "DELETE FROM writes WHERE thread_id=? AND checkpoint_ns=? AND checkpoint_id=?",
+            (thread_id, ns, cid),
+        )
+        conn.execute(
+            "DELETE FROM checkpoints WHERE thread_id=? AND checkpoint_ns=? AND checkpoint_id=?",
+            (thread_id, ns, cid),
+        )
+    conn.commit()
+    logger.info("Purged %d checkpoints older than %d days", len(to_delete), ttl_days)
+
+
 def create_agent_from_settings(settings: AgentSettings | None = None):
     """One-call convenience: load config, build tools, build agent.
 
@@ -171,9 +219,14 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
         settings = AgentSettings()
 
     system_prompt = load_system_prompt(settings.agent_instructions_path)
-    memory_store = MemoryStore(path=settings.agent_memory_path)
+    memory_store = MemoryStore(
+        path=settings.agent_memory_path,
+        ttl_days=settings.agent_memory_ttl_days,
+    )
     conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
+    checkpointer.setup()
+    _purge_old_checkpoints(conn, settings.agent_memory_ttl_days)
     tools = build_tools(settings, memory_store)
     agent = build_agent(
         tools=tools,

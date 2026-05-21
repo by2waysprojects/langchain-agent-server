@@ -255,6 +255,17 @@ The shell uses defense-in-depth with two enforcement layers:
 
 All file operations go through LangChain's `FileManagementToolkit`, sandboxed to the workspace directory. The container runs as a non-root user (`agentuser`).
 
+## Memory Retention Policy
+
+Both memory stores apply a TTL (Time-To-Live) policy controlled by `AGENT_MEMORY_TTL_DAYS` (default: 3 days, `0` to disable):
+
+| Store | File | Purge trigger | What gets deleted |
+|-------|------|---------------|-------------------|
+| **MemoryStore** | `memory.json` | On startup and every `save()` | Facts whose `timestamp` is older than TTL |
+| **Checkpoints** | `checkpoints.sqlite` | On startup | Checkpoint rows whose UUID-v1 timestamp is older than TTL |
+
+The purge runs automatically at agent startup. No manual cleanup is needed.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -268,6 +279,7 @@ All file operations go through LangChain's `FileManagementToolkit`, sandboxed to
 | `AGENT_STARTUP_PROMPT_PATH` | No | `STARTUP.md` | Path to startup prompt |
 | `AGENT_MEMORY_PATH` | No | `/app/workspace/memory.json` | Long-term memory file |
 | `AGENT_CHECKPOINTS_PATH` | No | `/app/workspace/checkpoints.sqlite` | SQLite file for conversation checkpoints |
+| `AGENT_MEMORY_TTL_DAYS` | No | `3` | Retention period in days for memory facts and checkpoints. `0` = keep forever |
 | `AGENT_WORKSPACE_DIR` | No | `/app/workspace` | Sandboxed file root |
 | `AGENT_MAX_ITERATIONS` | No | `50` | Max reasoning loops |
 

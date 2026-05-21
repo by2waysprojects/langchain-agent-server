@@ -62,6 +62,11 @@ class AgentSettings(BaseSettings):
         default="/app/workspace",
         description="Root directory for sandboxed file operations",
     )
+    agent_memory_ttl_days: int = Field(
+        default=3,
+        ge=0,
+        description="Retention period in days for memory facts and checkpoints. 0 = keep forever.",
+    )
     agent_max_iterations: int = Field(
         default=50,
         ge=1,
