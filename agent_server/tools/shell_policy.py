@@ -28,12 +28,15 @@ from __future__ import annotations
 import logging
 import re
 import shlex
+import threading
 from typing import Any, ClassVar
 
 from langchain_community.tools import ShellTool
 from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
+
+_reject_writes = threading.local()
 
 # ── Allowed binaries ────────────────────────────────────────────────────
 # Only these first-token binaries are permitted.
@@ -150,6 +153,30 @@ BLOCKED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 _CONFIRMED_PREFIX = "CONFIRMED: "
+
+
+def reject_writes_context():
+    """Context manager that causes CONFIRM commands to be auto-rejected.
+
+    Used by the API interface where there is no human to approve writes.
+    Thread-safe: only affects the current thread.
+
+    Usage::
+
+        with reject_writes_context():
+            invoke_agent(agent, messages, config)
+    """
+    class _RejectCtx:
+        def __enter__(self):
+            _reject_writes.active = True
+            return self
+        def __exit__(self, *exc):
+            _reject_writes.active = False
+    return _RejectCtx()
+
+
+def _is_reject_writes() -> bool:
+    return getattr(_reject_writes, "active", False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -294,6 +321,12 @@ class SecureShellTool(BaseTool):
             return self._shell._run(raw_command, **kwargs)
 
         if verdict.startswith("CONFIRM:"):
+            if _is_reject_writes():
+                logger.warning("AUTO-REJECTED (API): %r", raw_command)
+                return (
+                    f"Command rejected: write operations are not permitted "
+                    f"via the API. Use the CLI for commands that require confirmation."
+                )
             reason = verdict[len("CONFIRM:"):].strip()
             logger.info("NEEDS CONFIRMATION: %r — %s", raw_command, reason)
             return (
@@ -318,6 +351,12 @@ class SecureShellTool(BaseTool):
             return await self._shell._arun(raw_command, **kwargs)
 
         if verdict.startswith("CONFIRM:"):
+            if _is_reject_writes():
+                logger.warning("AUTO-REJECTED (API): %r", raw_command)
+                return (
+                    f"Command rejected: write operations are not permitted "
+                    f"via the API. Use the CLI for commands that require confirmation."
+                )
             reason = verdict[len("CONFIRM:"):].strip()
             logger.info("NEEDS CONFIRMATION: %r — %s", raw_command, reason)
             return (

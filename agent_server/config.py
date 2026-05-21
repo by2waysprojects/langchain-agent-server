@@ -67,6 +67,16 @@ class AgentSettings(BaseSettings):
         ge=0,
         description="Retention period in days for memory facts and checkpoints. 0 = keep forever.",
     )
+    agent_http_enabled: bool = Field(
+        default=True,
+        description="Enable the HTTP API server (set False to disable)",
+    )
+    agent_http_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        description="Port for the HTTP API server",
+    )
     agent_max_iterations: int = Field(
         default=50,
         ge=1,

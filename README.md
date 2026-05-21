@@ -11,7 +11,8 @@ You bring your project code. This framework provides:
 3. **Two markdown files** that control the agent: `AGENTS.md` (system prompt + scheduled tasks) and `STARTUP.md` (boot behavior).
 4. **An interactive REPL** where a human supervises the agent and approves write operations.
 5. **A clock scheduler** that runs agent tasks on a cron schedule -- no human needed.
-6. **A container** that runs as a non-root user with everything pre-installed.
+6. **An HTTP API** for programmatic access from frontends, bots, CI/CD, and webhooks.
+7. **A container** that runs as a non-root user with everything pre-installed.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
@@ -28,11 +29,11 @@ You bring your project code. This framework provides:
 │  └───────────────┘   └──┬──────────┬──────────┬──┘  └──────────────────┘  │
 │                         │          │          │                           │
 │           ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐              │
-│           │ CLI (REPL)   │ │ API (future)  │ │ Clock       │              │
-│           │ human-in-    │ │ HTTP/WebSocket│ │ scheduled   │              │
-│           │ the-loop     │ │ not yet impl. │ │ tasks       │              │
+│           │ CLI (REPL)   │ │ API (HTTP)    │ │ Clock       │              │
+│           │ human-in-    │ │ writes auto-  │ │ scheduled   │              │
+│           │ the-loop     │ │ rejected      │ │ tasks       │              │
 │           └──────────────┘ └───────┬───────┘ └─────────────┘              │
-│                                    │ :port                                │
+│                                    │ :8080                                │
 └────────────────────────────────────┼──────────────────────────────────────┘
                                      │
                           ┌──────────┴─────────┐
@@ -61,7 +62,7 @@ your-project/
     │   │   └── main.py
     │   ├── api/
     │   │   ├── __init__.py
-    │   │   └── app.py           # Not yet implemented
+    │   │   └── app.py           # HTTP API (FastAPI)
     │   ├── clock/
     │   │   ├── __init__.py
     │   │   └── main.py          # Periodic task scheduler
@@ -229,7 +230,50 @@ docker run -it --rm \
 
 ```
 
-The agent starts up, resolves any scheduled tasks from `AGENTS.md`, launches the clock in the background, then opens the CLI for the human. Everything in one process, one agent.
+The agent starts up, launches the API server and clock in background threads, then opens the CLI for the human. Everything in one process, one agent.
+
+### 7. Use the HTTP API
+
+The API starts automatically on port `8080` (configurable via `AGENT_HTTP_PORT`). Expose it with `-p`:
+
+```bash
+docker run -it --rm \
+  -e AGENT_API_KEY=sk-ant-... \
+  -p 8080:8080 \
+  my-agent
+```
+
+**Send a message (one-shot):**
+
+```bash
+curl -X POST http://localhost:8080/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content": "what is the system status?"}'
+```
+
+**Send a message (with session persistence):**
+
+```bash
+curl -X POST http://localhost:8080/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content": "check the logs", "thread_id": "my-session-42"}'
+```
+
+**Health check:**
+
+```bash
+curl http://localhost:8080/health
+```
+
+**List stored memory facts:**
+
+```bash
+curl http://localhost:8080/memory
+```
+
+Write operations (commands requiring confirmation like `git push`) are automatically rejected via the API -- there is no human to approve them. Use the CLI for those.
+
+To disable the API entirely, set `AGENT_HTTP_ENABLED=false`.
 
 ## Security Model
 
@@ -280,6 +324,8 @@ The purge runs automatically at agent startup. No manual cleanup is needed.
 | `AGENT_MEMORY_PATH` | No | `/app/workspace/memory.json` | Long-term memory file |
 | `AGENT_CHECKPOINTS_PATH` | No | `/app/workspace/checkpoints.sqlite` | SQLite file for conversation checkpoints |
 | `AGENT_MEMORY_TTL_DAYS` | No | `3` | Retention period in days for memory facts and checkpoints. `0` = keep forever |
+| `AGENT_HTTP_ENABLED` | No | `true` | Enable the HTTP API server |
+| `AGENT_HTTP_PORT` | No | `8080` | Port for the HTTP API server |
 | `AGENT_WORKSPACE_DIR` | No | `/app/workspace` | Sandboxed file root |
 | `AGENT_MAX_ITERATIONS` | No | `50` | Max reasoning loops |
 
@@ -297,7 +343,7 @@ langchain-agent-server/
 │   │   └── main.py              # Interactive REPL + startup prompt
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── app.py               # HTTP API (not yet implemented)
+│   │   └── app.py               # HTTP API (FastAPI)
 │   ├── clock/
 │   │   ├── __init__.py
 │   │   └── main.py              # Periodic task scheduler
