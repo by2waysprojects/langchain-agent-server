@@ -7,12 +7,13 @@ factory in ``agent_server.agent`` -- no agent construction logic here.
 from __future__ import annotations
 
 import sys
-import uuid
 from pathlib import Path
 
 from agent_server.agent import invoke_agent
+from agent_server.memory import MemoryStore
 
 DEFAULT_STARTUP_PROMPT_PATH = "STARTUP.md"
+CLI_THREAD_ID = "1"
 
 
 def _load_startup_prompt(path: str | Path = DEFAULT_STARTUP_PROMPT_PATH) -> str:
@@ -28,12 +29,11 @@ def _load_startup_prompt(path: str | Path = DEFAULT_STARTUP_PROMPT_PATH) -> str:
 def run_cli(
     agent,
     *,
-    thread_id: str | None = None,
     startup_prompt_path: str | Path = DEFAULT_STARTUP_PROMPT_PATH,
+    memory_store: MemoryStore | None = None,
 ) -> None:
     """Run a blocking REPL loop, forwarding user input to *agent*."""
-    tid = thread_id or uuid.uuid4().hex[:12]
-    config = {"configurable": {"thread_id": tid}}
+    config = {"configurable": {"thread_id": CLI_THREAD_ID}}
 
     try:
         print("\nInitializing — scanning environment...\n")
@@ -42,6 +42,7 @@ def run_cli(
             agent,
             [{"role": "user", "content": startup_prompt}],
             config,
+            memory_store=memory_store,
         )
         if response:
             print(response)
@@ -66,6 +67,7 @@ def run_cli(
                 agent,
                 [{"role": "user", "content": user_input}],
                 config,
+                memory_store=memory_store,
             )
             if response:
                 print(f"\n{response}")

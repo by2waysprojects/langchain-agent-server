@@ -14,31 +14,31 @@ You bring your project code. This framework provides:
 6. **A container** that runs as a non-root user with everything pre-installed.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Container                                                      │
-│                                                                 │
-│  ┌───────────────┐      ┌───────────────────────────┐           │
-│  │ AGENTS.md     │─────>│ Claude Agent              │           │
-│  │ (your prompt) │      │                           │           │
-│  └───────────────┘      │  tools:                   │           │
-│                         │  ├─ SecureShellTool       │           │
-│  ┌───────────────┐      │  ├─ FileManagementToolkit │           │
-│  │ Your project  │<─────│  └─ Your custom tools     │           │
-│  │ code + CLIs   │      └──┬──────────┬──────────┬──┘           │
-│  └───────────────┘         │          │          │              │
-│                            │          │          │              │
-│              ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐ │
-│              │ CLI (REPL)   │ │ API (future)  │ │ Clock       │ │
-│              │ human-in-    │ │ HTTP/WebSocket│ │ scheduled   │ │
-│              │ the-loop     │ │ not yet impl. │ │ tasks       │ │
-│              └──────────────┘ └───────┬───────┘ └─────────────┘ │
-│                                       │ :port                   │
-└───────────────────────────────────────┼─────────────────────────┘
-                                        │
-                             ┌──────────┴─────────┐
-                             │ External clients   │
-                             │ (web app, bot, CI) │
-                             └────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Container                                                                │
+│                                                                           │
+│  ┌───────────────┐   ┌───────────────────────────┐  ┌──────────────────┐  │
+│  │ AGENTS.md     │──>│ Claude Agent              │  │ Memory           │  │
+│  │ (your prompt) │   │                           │  │                  │  │
+│  └───────────────┘   │  tools:                   │  │ Checkpoints      │  │
+│                      │  ├─ SecureShellTool       │  │ (SQLite)         │  │
+│  ┌───────────────┐   │  ├─ FileManagementToolkit │  │                  │  │
+│  │ Your project  │<──│  ├─ MemoryTool ───────────┼─>│ MemoryStore      │  │
+│  │ code + CLIs   │   │  └─ Your custom tools     │  │ (memory.json)    │  │
+│  └───────────────┘   └──┬──────────┬──────────┬──┘  └──────────────────┘  │
+│                         │          │          │                           │
+│           ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐              │
+│           │ CLI (REPL)   │ │ API (future)  │ │ Clock       │              │
+│           │ human-in-    │ │ HTTP/WebSocket│ │ scheduled   │              │
+│           │ the-loop     │ │ not yet impl. │ │ tasks       │              │
+│           └──────────────┘ └───────┬───────┘ └─────────────┘              │
+│                                    │ :port                                │
+└────────────────────────────────────┼──────────────────────────────────────┘
+                                     │
+                          ┌──────────┴─────────┐
+                          │ External clients   │
+                          │ (web app, bot, CI) │
+                          └────────────────────┘
 ```
 
 ## Integration Guide
@@ -65,10 +65,14 @@ your-project/
     │   ├── clock/
     │   │   ├── __init__.py
     │   │   └── main.py          # Periodic task scheduler
+    │   ├── memory/
+    │   │   ├── __init__.py
+    │   │   └── store.py             # Long-term memory (JSON on disk)
     │   └── tools/
     │       ├── __init__.py
     │       ├── shell_policy.py
-    │       └── filesystem.py
+    │       ├── filesystem.py
+    │       └── memory.py            # MemoryTool for the agent
     ├── AGENTS.md                # <-- edit this (instructions + scheduled tasks)
     ├── STARTUP.md               # <-- edit this (boot behavior)
     ├── Dockerfile               # <-- customize this for your project
@@ -250,6 +254,8 @@ All file operations go through LangChain's `FileManagementToolkit`, sandboxed to
 | `AGENT_MODEL` | No | `claude-4.6-opus` | Model identifier |
 | `AGENT_INSTRUCTIONS_PATH` | No | `AGENTS.md` | Path to system prompt (also contains scheduled tasks) |
 | `AGENT_STARTUP_PROMPT_PATH` | No | `STARTUP.md` | Path to startup prompt |
+| `AGENT_MEMORY_PATH` | No | `/app/workspace/memory.json` | Long-term memory file |
+| `AGENT_CHECKPOINTS_PATH` | No | `/app/workspace/checkpoints.sqlite` | SQLite file for conversation checkpoints |
 | `AGENT_WORKSPACE_DIR` | No | `/app/workspace` | Sandboxed file root |
 | `AGENT_MAX_ITERATIONS` | No | `50` | Max reasoning loops |
 
@@ -271,10 +277,14 @@ langchain-agent-server/
 │   ├── clock/
 │   │   ├── __init__.py
 │   │   └── main.py              # Periodic task scheduler
+│   ├── memory/
+│   │   ├── __init__.py
+│   │   └── store.py                 # Long-term memory (JSON on disk)
 │   └── tools/
 │       ├── __init__.py
-│       ├── shell_policy.py      # Whitelist + confirm + blocked patterns
-│       └── filesystem.py        # Sandboxed file management
+│       ├── shell_policy.py          # Whitelist + confirm + blocked patterns
+│       ├── filesystem.py            # Sandboxed file management
+│       └── memory.py                # MemoryTool for the agent
 ├── AGENTS.md                    # System prompt + scheduled tasks
 ├── STARTUP.md                   # Startup behavior (boot sequence)
 ├── Dockerfile                   # Container definition

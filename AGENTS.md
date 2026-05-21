@@ -36,6 +36,19 @@ You have sandboxed file tools (CopyFile, MoveFile, WriteFile, ReadFile, DeleteFi
 Use this tool to query your project's API. Actions: ...
 -->
 
+### Memory Tool (`memory`)
+
+You have a long-term memory that persists across sessions. Use it to remember facts, preferences, and context. Input is JSON:
+
+| Action | Input | Example |
+|--------|-------|---------|
+| Remember | `{"action": "remember", "fact": "..."}` | Save a fact for later |
+| Recall | `{"action": "recall", "query": "..."}` | Search stored facts by keywords |
+| List | `{"action": "list"}` | See all stored facts |
+| Forget | `{"action": "forget", "id": "..."}` | Remove a fact by id |
+
+Relevant memories are also injected automatically as context before each interaction. Use `remember` proactively when you learn something important about the project, the user, or recurring patterns.
+
 ### Shell Commands
 
 You have access to a secure shell. Commands are validated against a security policy with two tiers:

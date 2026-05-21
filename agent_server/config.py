@@ -35,6 +35,14 @@ class AgentSettings(BaseSettings):
         default="STARTUP.md",
         description="Path to the markdown file used as the agent startup prompt",
     )
+    agent_memory_path: str = Field(
+        default="/app/workspace/memory.json",
+        description="Path to the JSON file for long-term memory storage",
+    )
+    agent_checkpoints_path: str = Field(
+        default="/app/workspace/checkpoints.sqlite",
+        description="Path to the SQLite file for LangGraph conversation checkpoints",
+    )
     agent_workspace_dir: str = Field(
         default="/app/workspace",
         description="Root directory for sandboxed file operations",

@@ -1,0 +1,88 @@
+"""Long-term memory store backed by a JSON file on disk.
+
+Provides persistent storage for facts, preferences, and context that
+the agent learns over time.  Shared across all interfaces (CLI, clock,
+API) via a single instance.
+
+Thread-safe: all reads/writes are protected by a lock.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryStore:
+    """Key-value fact store persisted as a JSON file."""
+
+    def __init__(self, path: str | Path = "/app/workspace/memory.json") -> None:
+        self._path = Path(path)
+        self._lock = threading.Lock()
+        self._facts: list[dict] = []
+        self._load()
+
+    def _load(self) -> None:
+        if self._path.is_file():
+            try:
+                data = json.loads(self._path.read_text(encoding="utf-8"))
+                self._facts = data if isinstance(data, list) else []
+                logger.info("Loaded %d facts from %s", len(self._facts), self._path)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Could not load memory file: %s", exc)
+                self._facts = []
+        else:
+            self._facts = []
+
+    def _flush(self) -> None:
+        os.makedirs(self._path.parent, exist_ok=True)
+        self._path.write_text(
+            json.dumps(self._facts, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def save(self, fact: str, *, source: str = "agent") -> str:
+        """Store a fact. Returns the fact id."""
+        entry = {
+            "id": uuid.uuid4().hex[:10],
+            "fact": fact,
+            "source": source,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._lock:
+            self._facts.append(entry)
+            self._flush()
+        logger.info("Saved fact: %s", fact[:80])
+        return entry["id"]
+
+    def recall(self, query: str) -> list[dict]:
+        """Search facts by keyword match (case-insensitive)."""
+        terms = query.lower().split()
+        with self._lock:
+            results = [
+                f for f in self._facts
+                if any(t in f["fact"].lower() for t in terms)
+            ]
+        return results
+
+    def list_all(self) -> list[dict]:
+        """Return all stored facts."""
+        with self._lock:
+            return list(self._facts)
+
+    def remove(self, fact_id: str) -> bool:
+        """Remove a fact by id. Returns True if found and removed."""
+        with self._lock:
+            before = len(self._facts)
+            self._facts = [f for f in self._facts if f["id"] != fact_id]
+            if len(self._facts) < before:
+                self._flush()
+                return True
+        return False

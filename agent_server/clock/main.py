@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from threading import Event, Thread
 
 from agent_server.agent import invoke_agent
+from agent_server.memory import MemoryStore
+
+CLOCK_THREAD_ID = "2"
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,6 @@ Example output:
 class ScheduledTask:
     cron_expr: str
     instruction: str
-    thread_id: str
 
 
 def extract_tasks_section(content: str) -> str | None:
@@ -94,11 +96,7 @@ def resolve_tasks(agent, section: str) -> list[ScheduledTask]:
         cron = item.get("cron", "").strip()
         instruction = item.get("instruction", "").strip()
         if cron and instruction:
-            tasks.append(ScheduledTask(
-                cron_expr=cron,
-                instruction=instruction,
-                thread_id=uuid.uuid4().hex[:12],
-            ))
+            tasks.append(ScheduledTask(cron_expr=cron, instruction=instruction))
     return tasks
 
 
@@ -140,8 +138,8 @@ def cron_matches_now(cron_expr: str) -> bool:
     )
 
 
-def _run_task(agent, task: ScheduledTask) -> None:
-    config = {"configurable": {"thread_id": task.thread_id}}
+def _run_task(agent, task: ScheduledTask, memory_store: MemoryStore | None) -> None:
+    config = {"configurable": {"thread_id": CLOCK_THREAD_ID}}
     label = task.instruction[:50]
     logger.info("Running scheduled task: %s", label)
     try:
@@ -149,6 +147,7 @@ def _run_task(agent, task: ScheduledTask) -> None:
             agent,
             [{"role": "user", "content": task.instruction}],
             config,
+            memory_store=memory_store,
         )
         if response:
             print(f"\n[clock] {label}\n{response}\n")
@@ -161,6 +160,7 @@ def _run_loop(
     agent,
     tasks: list[ScheduledTask],
     stop_event: Event,
+    memory_store: MemoryStore | None,
 ) -> None:
     """Main clock loop -- checks every 60s if any task should run."""
     print(f"\nClock started with {len(tasks)} task(s):")
@@ -173,7 +173,7 @@ def _run_loop(
             if cron_matches_now(task.cron_expr):
                 thread = Thread(
                     target=_run_task,
-                    args=(agent, task),
+                    args=(agent, task, memory_store),
                     daemon=True,
                 )
                 thread.start()
@@ -181,7 +181,10 @@ def _run_loop(
         stop_event.wait(60)
 
 
-def start_clock(agent, system_prompt: str, stop_event: Event) -> None:
+def start_clock(
+    agent, system_prompt: str, stop_event: Event,
+    *, memory_store: MemoryStore | None = None,
+) -> None:
     """Extract tasks, resolve schedules, and start the clock in a background thread.
 
     Does nothing if no ``## Scheduled Tasks`` section is found.
@@ -198,7 +201,7 @@ def start_clock(agent, system_prompt: str, stop_event: Event) -> None:
 
     thread = Thread(
         target=_run_loop,
-        args=(agent, tasks, stop_event),
+        args=(agent, tasks, stop_event, memory_store),
         daemon=True,
     )
     thread.start()
