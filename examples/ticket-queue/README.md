@@ -1,15 +1,15 @@
 # Ticket Sales Queue
 
-A concert ticket sales system with **limited stock** and a **FIFO queue**. Demonstrates concurrency control, memory deduplication, and cross-thread coordination.
+A concert ticket sales system with **limited stock** and a **FIFO queue**. Demonstrates key-value memory, periodic processing, and cross-thread coordination.
 
 ## How it works
 
 - **10 tickets** available at startup.
-- **API users** request a ticket and join a queue.
+- **API users** send "I want to buy a ticket" -- the agent assigns them a unique ID (e.g. `TK-001`) and adds them to the queue.
 - **Clock** processes the queue every 30 seconds: sells one ticket to the next person in line, decrements stock.
 - **CLI** lets the operator inspect stock, queue, and sales history.
 - When stock hits 0, remaining users in the queue are told "sold out".
-- If two users send the same request simultaneously, the agent checks the queue array before adding -- duplicates are prevented.
+- Each request gets its own generated ID, so there are no duplicates.
 
 ## Build & Run
 
@@ -24,26 +24,29 @@ docker run -it --rm \
 
 ## Usage
 
-**Buy a ticket (each user uses their own thread_id):**
+**Buy a ticket:**
 
 ```bash
 curl -X POST localhost:8080/messages \
   -H 'Content-Type: application/json' \
-  -d '{"content":"I want to buy a ticket","thread_id":"alice"}'
+  -d '{"content":"I want to buy a ticket"}'
 ```
 
-**Simulate multiple users queuing:**
+The agent responds with an assigned ID and queue position, e.g.:
+> Your ticket ID is TK-001. You are #1 in the queue. Tickets are processed every 30 seconds.
+
+**Simulate multiple buyers:**
 
 ```bash
-for user in alice bob carol dave eve; do
+for i in 1 2 3 4 5; do
   curl -s -X POST localhost:8080/messages \
     -H 'Content-Type: application/json' \
-    -d "{\"content\":\"buy 1 ticket\",\"thread_id\":\"$user\"}" &
+    -d '{"content":"buy 1 ticket"}' &
 done
 wait
 ```
 
-Each user gets a position in the queue. Every 30 seconds the Clock sells one ticket to the next in line.
+Each buyer gets a unique ID and position. Every 30 seconds the Clock sells one ticket to the next in line.
 
 **Check stock from CLI:** ask "how many tickets left?"
 
@@ -56,19 +59,3 @@ Each user gets a position in the queue. Every 30 seconds the Clock sells one tic
 ```bash
 curl -s localhost:8080/memory | jq
 ```
-
-## Concurrency demo
-
-Send the same user twice at once -- the second request detects the duplicate:
-
-```bash
-# Terminal 1
-curl -X POST localhost:8080/messages -H 'Content-Type: application/json' \
-  -d '{"content":"buy 1 ticket","thread_id":"alice"}'
-
-# Terminal 2 (at the same time)
-curl -X POST localhost:8080/messages -H 'Content-Type: application/json' \
-  -d '{"content":"buy 1 ticket","thread_id":"alice"}'
-```
-
-The second request finds alice already present in the queue array -- she only gets queued once.

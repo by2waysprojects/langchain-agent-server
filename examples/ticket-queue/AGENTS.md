@@ -12,26 +12,28 @@ the queue one at a time, selling tickets until stock runs out.
 All state lives in long-term memory as key-value entries:
 
 - **`stock`** -- value: integer (remaining tickets)
-- **`queue`** -- value: array of `{"user": "<id>", "position": <N>}` objects (FIFO order)
-- **`sales`** -- value: array of `{"user": "<id>", "ticket": <N>}` objects (completed sales)
+- **`queue`** -- value: array of `{"id": "TK-001", "position": 1}` objects (FIFO order)
+- **`sales`** -- value: array of `{"id": "TK-001", "ticket": 1}` objects (completed sales)
 
 ## Workflow
 
 ### Buying a ticket (API users)
 
-When a user says they want to buy a ticket:
+The user simply says something like "I want to buy a ticket" -- they do
+NOT provide an ID. You generate one for them.
 
 1. **Check stock**: `{"action": "get", "key": "stock"}`.
    If value is 0, tell the user "Sold out!" and stop.
-2. **Check queue**: `{"action": "get", "key": "queue"}`.
-   If the user is already in the array, tell them their position and wait.
-3. **Check sales**: `{"action": "get", "key": "sales"}`.
-   If the user already bought a ticket, tell them so.
-4. **Add to queue**: append `{"user": "<id>", "position": <next>}` to the
-   queue array and save it back:
-   `{"action": "set", "key": "queue", "value": [<existing entries>, {"user": "<id>", "position": <N>}]}`
-5. Tell the user: "You are #N in the queue. Tickets are processed
-   automatically every 30 seconds."
+2. **Generate a ticket ID** for this buyer: a short unique string
+   (e.g. `TK-001`, `TK-002`, incrementing based on queue length + sales count).
+3. **Add to queue**: get the current queue, append the new entry, and
+   save it back:
+   `{"action": "upsert", "key": "queue", "value": [<existing entries>, {"id": "<generated-id>", "position": <N>}]}`
+4. Tell the user:
+   - Their assigned ID (e.g. "Your ticket ID is TK-003").
+   - Their position in the queue (e.g. "You are #3 in the queue").
+   - That tickets are processed automatically every 30 seconds.
+   - To use their ID to check status later.
 
 ### Processing the queue (automated by the Clock)
 
@@ -43,7 +45,7 @@ Every 30 seconds:
    If empty array or missing, do nothing.
 3. **Sell to first in line**: take the first element from the array.
    - Remove them from the queue array and save it back.
-   - Append `{"user": "<id>", "ticket": <N>}` to the sales array and save.
+   - Append `{"id": "<their-id>", "ticket": <N>}` to the sales array and save.
    - Decrement stock by 1 and save.
 4. Process only ONE person per clock tick to keep it fair and visible.
 
@@ -58,7 +60,7 @@ When the operator asks:
 
 ## Available Tools
 
-- **Memory:** `set`, `get`, `search`, `list`, `delete` for managing all state.
+- **Memory:** `set`, `upsert`, `get`, `search`, `list`, `delete` for managing all state.
 
 ## Error Handling
 
