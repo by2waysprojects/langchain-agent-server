@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -38,10 +39,9 @@ class MessageResponse(BaseModel):
     thread_id: str
 
 
-class MemoryFactResponse(BaseModel):
-    id: str
-    fact: str
-    source: str
+class MemoryEntryResponse(BaseModel):
+    key: str
+    value: Any
     timestamp: str | None = None
 
 
@@ -71,19 +71,18 @@ def create_app(agent, *, memory_store: MemoryStore | None = None) -> FastAPI:
             thread_id=client_id,
         )
 
-    @app.get("/memory", response_model=list[MemoryFactResponse])
+    @app.get("/memory", response_model=list[MemoryEntryResponse])
     def list_memory():
         if memory_store is None:
             return []
-        facts = memory_store.list_all()
+        entries = memory_store.list_all()
         return [
-            MemoryFactResponse(
-                id=f["id"],
-                fact=f["fact"],
-                source=f.get("source", "unknown"),
-                timestamp=f.get("timestamp"),
+            MemoryEntryResponse(
+                key=key,
+                value=entry["value"],
+                timestamp=entry.get("timestamp"),
             )
-            for f in facts
+            for key, entry in entries.items()
         ]
 
     return app

@@ -1,8 +1,10 @@
 """Long-term memory store backed by a JSON file on disk.
 
-Provides persistent storage for facts, preferences, and context that
-the agent learns over time.  Shared across all interfaces (CLI, clock,
-API) via a single instance.
+Generic key-value store where each entry has a unique string key and
+an arbitrary JSON value.  The timestamp is managed automatically by
+the framework.
+
+Shared across all interfaces (CLI, clock, API) via a single instance.
 
 Thread-safe: all reads/writes are protected by a lock.
 """
@@ -13,34 +15,13 @@ import json
 import logging
 import os
 import threading
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-_active_thread_id: str = "unknown"
-_active_thread_id_lock = threading.Lock()
-
-
-def set_current_thread_id(thread_id: str) -> None:
-    """Set the active thread ID (used as default source in save).
-
-    Uses a module-level variable instead of threading.local because
-    LangGraph may execute tools in threadpool threads that don't
-    inherit thread-local state.
-    """
-    global _active_thread_id
-    with _active_thread_id_lock:
-        _active_thread_id = thread_id
-
-
-def get_current_thread_id() -> str:
-    """Get the active thread ID."""
-    with _active_thread_id_lock:
-        return _active_thread_id
 
 
 def _parse_ts(ts: str | None) -> datetime:
@@ -57,7 +38,15 @@ def _parse_ts(ts: str | None) -> datetime:
 
 
 class MemoryStore:
-    """Key-value fact store persisted as a JSON file."""
+    """Key-value store persisted as a JSON file.
+
+    On disk the file is a JSON object mapping string keys to entry dicts::
+
+        {
+            "stock": {"value": 10, "timestamp": "..."},
+            "queue": {"value": [...], "timestamp": "..."}
+        }
+    """
 
     def __init__(
         self,
@@ -67,91 +56,92 @@ class MemoryStore:
         self._path = Path(path)
         self._lock = threading.Lock()
         self._ttl_days = ttl_days
-        self._facts: list[dict] = []
+        self._entries: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
         if self._path.is_file():
             try:
                 data = json.loads(self._path.read_text(encoding="utf-8"))
-                self._facts = data if isinstance(data, list) else []
-                logger.info("Loaded %d facts from %s", len(self._facts), self._path)
+                self._entries = data if isinstance(data, dict) else {}
+                logger.info(
+                    "Loaded %d entries from %s", len(self._entries), self._path
+                )
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Could not load memory file: %s", exc)
-                self._facts = []
+                self._entries = {}
         else:
-            self._facts = []
+            self._entries = {}
         removed = self._purge_expired()
         if removed:
-            logger.info("Purged %d expired facts (TTL=%d days)", removed, self._ttl_days)
+            logger.info(
+                "Purged %d expired entries (TTL=%d days)", removed, self._ttl_days
+            )
 
     def _purge_expired(self) -> int:
-        """Remove facts older than ``_ttl_days``. Returns count of removed facts."""
+        """Remove entries older than ``_ttl_days``. Returns count removed."""
         if self._ttl_days <= 0:
             return 0
         cutoff = datetime.now(timezone.utc) - timedelta(days=self._ttl_days)
-        before = len(self._facts)
-        self._facts = [
-            f for f in self._facts
-            if _parse_ts(f.get("timestamp")) >= cutoff
+        expired = [
+            k
+            for k, v in self._entries.items()
+            if _parse_ts(v.get("timestamp")) < cutoff
         ]
-        removed = before - len(self._facts)
-        if removed:
+        for k in expired:
+            del self._entries[k]
+        if expired:
             self._flush()
-        return removed
+        return len(expired)
 
     def _flush(self) -> None:
         os.makedirs(self._path.parent, exist_ok=True)
         self._path.write_text(
-            json.dumps(self._facts, indent=2, ensure_ascii=False),
+            json.dumps(self._entries, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
-    def save(self, fact: str, *, source: str | None = None) -> tuple[str, str, bool]:
-        """Store a fact. Returns ``(id, source, is_new)``.
-
-        If an identical fact already exists, returns its id and source
-        with ``is_new=False`` so the caller can detect duplicates.
+    def save(self, key: str, value: Any) -> bool:
+        """Upsert an entry. Returns ``True`` if the key was created,
+        ``False`` if an existing key was updated.
         """
-        if source is None:
-            source = get_current_thread_id()
+        now = datetime.now(timezone.utc).isoformat()
         with self._lock:
-            for f in self._facts:
-                if f["fact"] == fact:
-                    logger.info("Duplicate fact, returning existing id: %s", f["id"])
-                    return f["id"], f.get("source", "unknown"), False
-            entry = {
-                "id": uuid.uuid4().hex[:10],
-                "fact": fact,
-                "source": source,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            self._facts.append(entry)
+            is_new = key not in self._entries
+            self._entries[key] = {"value": value, "timestamp": now}
             self._flush()
-        logger.info("Saved fact: %s", fact[:80])
-        return entry["id"], source, True
+        verb = "Created" if is_new else "Updated"
+        logger.info("%s key=%s", verb, key)
+        return is_new
 
-    def recall(self, query: str) -> list[dict]:
-        """Search facts by keyword match (case-insensitive)."""
-        terms = query.lower().split()
+    def get(self, key: str) -> dict | None:
+        """Return the full entry for *key*, or ``None``."""
         with self._lock:
-            results = [
-                f for f in self._facts
-                if any(t in f["fact"].lower() for t in terms)
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            return {"key": key, **entry}
+
+    def search(self, query: str) -> list[dict]:
+        """Find entries whose key contains *query* (case-insensitive)."""
+        q = query.lower()
+        with self._lock:
+            return [
+                {"key": k, **v}
+                for k, v in self._entries.items()
+                if q in k.lower()
             ]
-        return results
 
-    def list_all(self) -> list[dict]:
-        """Return all stored facts."""
+    def list_all(self) -> dict[str, dict]:
+        """Return all entries as ``{key: {value, timestamp}}``."""
         with self._lock:
-            return list(self._facts)
+            return dict(self._entries)
 
-    def remove(self, fact_id: str) -> bool:
-        """Remove a fact by id. Returns True if found and removed."""
+    def remove(self, key: str) -> bool:
+        """Remove an entry by key. Returns ``True`` if found and removed."""
         with self._lock:
-            before = len(self._facts)
-            self._facts = [f for f in self._facts if f["id"] != fact_id]
-            if len(self._facts) < before:
+            if key in self._entries:
+                del self._entries[key]
                 self._flush()
                 return True
         return False

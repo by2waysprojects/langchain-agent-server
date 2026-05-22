@@ -9,11 +9,11 @@ the queue one at a time, selling tickets until stock runs out.
 
 ## Memory Layout
 
-All state lives in long-term memory using these fact formats:
+All state lives in long-term memory as key-value entries:
 
-- `stock: <N> remaining` -- single fact tracking available tickets
-- `queue: <thread_id> | position: <N>` -- one fact per user waiting in line
-- `sold: <thread_id> | ticket: <N>` -- one fact per completed sale
+- **`stock`** -- value: integer (remaining tickets)
+- **`queue`** -- value: array of `{"user": "<id>", "position": <N>}` objects (FIFO order)
+- **`sales`** -- value: array of `{"user": "<id>", "ticket": <N>}` objects (completed sales)
 
 ## Workflow
 
@@ -21,57 +21,48 @@ All state lives in long-term memory using these fact formats:
 
 When a user says they want to buy a ticket:
 
-1. **Check stock first**: `{"action": "recall", "query": "stock"}`.
-   If stock is 0, tell the user "Sold out!" and stop.
-2. **Check if already queued**: `{"action": "recall", "query": "queue: <their thread_id>"}`.
-   If they are already in the queue, tell them their position and wait.
-   The dedup in `save` is a safety net: even if two identical requests
-   arrive simultaneously, the second returns `Already exists`.
-3. **Check if already purchased**: `{"action": "recall", "query": "sold: <their thread_id>"}`.
-   If they already bought a ticket, tell them so.
-4. **Determine position**: recall all queue entries with
-   `{"action": "recall", "query": "queue"}` and count them.
-   The new position is count + 1.
-5. **Add to queue**:
-   `{"action": "remember", "fact": "queue: <thread_id> | position: <N>"}`
-6. Tell the user: "You are #N in the queue. Tickets are processed
+1. **Check stock**: `{"action": "get", "key": "stock"}`.
+   If value is 0, tell the user "Sold out!" and stop.
+2. **Check queue**: `{"action": "get", "key": "queue"}`.
+   If the user is already in the array, tell them their position and wait.
+3. **Check sales**: `{"action": "get", "key": "sales"}`.
+   If the user already bought a ticket, tell them so.
+4. **Add to queue**: append `{"user": "<id>", "position": <next>}` to the
+   queue array and save it back:
+   `{"action": "set", "key": "queue", "value": [<existing entries>, {"user": "<id>", "position": <N>}]}`
+5. Tell the user: "You are #N in the queue. Tickets are processed
    automatically every 30 seconds."
 
 ### Processing the queue (automated by the Clock)
 
 Every 30 seconds:
 
-1. **Check stock**: `{"action": "recall", "query": "stock"}`.
-   If stock is 0, check if there are still people in the queue.
-   If so, forget each remaining queue entry. Then stop.
-2. **Get the queue**: `{"action": "recall", "query": "queue"}`.
-   If empty, do nothing.
-3. **Pick the first in line**: find the entry with the lowest position number.
-4. **Sell the ticket**:
-   - Parse current stock number.
-   - Forget the queue entry (by its id).
-   - Remember the sale: `{"action": "remember", "fact": "sold: <thread_id> | ticket: <ticket_number>"}`
-     where ticket_number = (initial_stock - remaining_stock + 1).
-   - Forget the old stock fact (by its id).
-   - Remember the updated stock: `{"action": "remember", "fact": "stock: <N-1> remaining"}`
-5. Process only ONE person per clock tick to keep it fair and visible.
+1. **Check stock**: `{"action": "get", "key": "stock"}`.
+   If 0 and the queue is not empty, clear the queue and stop.
+2. **Get the queue**: `{"action": "get", "key": "queue"}`.
+   If empty array or missing, do nothing.
+3. **Sell to first in line**: take the first element from the array.
+   - Remove them from the queue array and save it back.
+   - Append `{"user": "<id>", "ticket": <N>}` to the sales array and save.
+   - Decrement stock by 1 and save.
+4. Process only ONE person per clock tick to keep it fair and visible.
 
 ### Inspecting the system (CLI)
 
 When the operator asks:
 
-- **"how many tickets left?"** -- recall stock.
-- **"who is in the queue?"** -- recall queue, list by position.
-- **"show sales"** -- recall sold, list all purchases.
-- **"reset"** -- forget all queue/sold/stock facts and reinitialize stock.
+- **"how many tickets left?"** -- get stock.
+- **"who is in the queue?"** -- get queue, list by position.
+- **"show sales"** -- get sales, list all purchases.
+- **"reset"** -- delete stock, queue, and sales keys, then reinitialize stock.
 
 ## Available Tools
 
-- **Memory:** `remember`, `recall`, `list`, `forget` for managing queue, stock, and sales.
+- **Memory:** `set`, `get`, `search`, `list`, `delete` for managing all state.
 
 ## Error Handling
 
-- If stock fact is missing, assume 0 and warn the operator via CLI.
+- If stock key is missing, assume 0 and warn the operator via CLI.
 - If a user tries to buy but stock is 0, tell them immediately -- don't queue them.
 - If the Clock finds no queue entries, skip silently.
 

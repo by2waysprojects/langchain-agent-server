@@ -1,10 +1,14 @@
 You just started. Initialize the ticket sales system:
 
-1. Check if stock already exists: `{"action": "recall", "query": "stock"}`
-2. If no stock fact is found, initialize it:
-   `{"action": "remember", "fact": "stock: 10 remaining"}`
-3. Check for any existing queue entries: `{"action": "recall", "query": "queue"}`
-4. Check for any past sales: `{"action": "recall", "query": "sold"}`
+1. Check if stock already exists: `{"action": "get", "key": "stock"}`
+2. If no stock entry exists, initialize it:
+   `{"action": "set", "key": "stock", "value": 10}`
+3. Check for any existing queue: `{"action": "get", "key": "queue"}`
+4. If no queue entry exists, initialize it:
+   `{"action": "set", "key": "queue", "value": []}`
+5. Check for any past sales: `{"action": "get", "key": "sales"}`
+6. If no sales entry exists, initialize it:
+   `{"action": "set", "key": "sales", "value": []}`
 
 Then greet the operator with:
 - Current stock level.

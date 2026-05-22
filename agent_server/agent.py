@@ -6,6 +6,7 @@ layers (CLI, Clock, API) import from here instead of building their own.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import uuid
@@ -23,7 +24,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 logger = logging.getLogger(__name__)
 
 from agent_server.config import AgentSettings
-from agent_server.memory import MemoryStore, set_current_thread_id
+from agent_server.memory import MemoryStore
 from agent_server.tools.filesystem import get_file_tools
 from agent_server.tools.memory import MemoryTool
 from agent_server.tools.shell_policy import SecureShellTool
@@ -250,9 +251,6 @@ def invoke_agent(
     as context.  Conversation history is handled automatically by LangGraph's
     SQLite checkpointer.
     """
-    thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-    set_current_thread_id(thread_id)
-
     enriched = list(messages)
 
     if memory_store:
@@ -261,15 +259,18 @@ def invoke_agent(
             if m.get("role") == "user":
                 user_content = m.get("content", "")
         if user_content:
-            recalls = memory_store.recall(user_content)
-            if recalls:
-                facts_text = "\n".join(f"- {r['fact']}" for r in recalls[:5])
+            results = memory_store.search(user_content)
+            if results:
+                entries_text = "\n".join(
+                    f"- {r['key']}: {json.dumps(r['value'], ensure_ascii=False)}"
+                    for r in results[:5]
+                )
                 context_msg = {
                     "role": "user",
                     "content": (
                         f"[Context from your long-term memory — do not repeat "
                         f"these verbatim, just use them as background knowledge]\n"
-                        f"{facts_text}"
+                        f"{entries_text}"
                     ),
                 }
                 enriched = [context_msg] + enriched

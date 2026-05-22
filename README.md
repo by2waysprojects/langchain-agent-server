@@ -265,7 +265,7 @@ curl -X POST http://localhost:8080/messages \
 curl http://localhost:8080/health
 ```
 
-**List stored memory facts:**
+**List stored memory entries:**
 
 ```bash
 curl http://localhost:8080/memory
@@ -299,13 +299,42 @@ The shell uses defense-in-depth with two enforcement layers:
 
 All file operations go through LangChain's `FileManagementToolkit`, sandboxed to the workspace directory. The container runs as a non-root user (`agentuser`).
 
+## Memory Model
+
+The agent has a persistent **key-value store** (`memory.json`) where each entry has a unique string key and an arbitrary JSON value. Metadata is managed automatically:
+
+| Field | Type | Managed by |
+|-------|------|------------|
+| **key** | string (unique) | App (defined in AGENTS.md) |
+| **value** | any JSON (int, string, array, object, bool, null) | App |
+| **timestamp** | ISO 8601 | Framework (last update time) |
+
+Example `memory.json`:
+
+```json
+{
+  "stock": {"value": 10, "timestamp": "2026-05-22T20:00:00+00:00"},
+  "queue": {"value": [{"user": "alice", "position": 1}], "timestamp": "2026-05-22T20:01:00+00:00"}
+}
+```
+
+The MemoryTool exposes these actions to the agent:
+
+| Action | Input | Description |
+|--------|-------|-------------|
+| `set` | `key`, `value` | Create or update an entry |
+| `get` | `key` | Retrieve one entry |
+| `search` | `query` | Find entries by key substring |
+| `list` | -- | List all entries |
+| `delete` | `key` | Remove an entry |
+
 ## Memory Retention Policy
 
 Both memory stores apply a TTL (Time-To-Live) policy controlled by `AGENT_MEMORY_TTL_DAYS` (default: 3 days, `0` to disable):
 
 | Store | File | Purge trigger | What gets deleted |
 |-------|------|---------------|-------------------|
-| **MemoryStore** | `memory.json` | On startup and every `save()` | Facts whose `timestamp` is older than TTL |
+| **MemoryStore** | `memory.json` | On startup | Entries whose `timestamp` is older than TTL |
 | **Checkpoints** | `checkpoints.sqlite` | On startup | Checkpoint rows whose UUID-v1 timestamp is older than TTL |
 
 The purge runs automatically at agent startup. No manual cleanup is needed.
@@ -349,7 +378,7 @@ langchain-agent-server/
 │   │   └── main.py              # Periodic task scheduler
 │   ├── memory/
 │   │   ├── __init__.py
-│   │   └── store.py                 # Long-term memory (JSON on disk)
+│   │   └── store.py                 # Key-value store (JSON on disk)
 │   └── tools/
 │       ├── __init__.py
 │       ├── shell_policy.py          # Whitelist + confirm + blocked patterns

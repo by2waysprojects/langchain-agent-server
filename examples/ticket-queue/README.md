@@ -9,7 +9,7 @@ A concert ticket sales system with **limited stock** and a **FIFO queue**. Demon
 - **Clock** processes the queue every 30 seconds: sells one ticket to the next person in line, decrements stock.
 - **CLI** lets the operator inspect stock, queue, and sales history.
 - When stock hits 0, remaining users in the queue are told "sold out".
-- If two users send the same request simultaneously, the dedup in `save` prevents duplicate queue entries.
+- If two users send the same request simultaneously, the agent checks the queue array before adding -- duplicates are prevented.
 
 ## Build & Run
 
@@ -71,4 +71,4 @@ curl -X POST localhost:8080/messages -H 'Content-Type: application/json' \
   -d '{"content":"buy 1 ticket","thread_id":"alice"}'
 ```
 
-The second request either finds the existing queue entry via `recall` or hits the dedup in `save` -- alice only gets queued once.
+The second request finds alice already present in the queue array -- she only gets queued once.
