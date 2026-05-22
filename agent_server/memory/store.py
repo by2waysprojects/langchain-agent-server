@@ -19,7 +19,19 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_current_thread_id = threading.local()
+
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def set_current_thread_id(thread_id: str) -> None:
+    """Set the thread ID for the current thread (used as source in save)."""
+    _current_thread_id.value = thread_id
+
+
+def get_current_thread_id() -> str:
+    """Get the thread ID for the current thread, or 'unknown'."""
+    return getattr(_current_thread_id, "value", "unknown")
 
 
 def _parse_ts(ts: str | None) -> datetime:
@@ -86,13 +98,19 @@ class MemoryStore:
             encoding="utf-8",
         )
 
-    def save(self, fact: str, *, source: str = "agent") -> str:
-        """Store a fact. Returns the existing id if a duplicate is found."""
+    def save(self, fact: str, *, source: str | None = None) -> tuple[str, str, bool]:
+        """Store a fact. Returns ``(id, source, is_new)``.
+
+        If an identical fact already exists, returns its id and source
+        with ``is_new=False`` so the caller can detect duplicates.
+        """
+        if source is None:
+            source = get_current_thread_id()
         with self._lock:
             for f in self._facts:
                 if f["fact"] == fact:
                     logger.info("Duplicate fact, returning existing id: %s", f["id"])
-                    return f["id"]
+                    return f["id"], f.get("source", "unknown"), False
             entry = {
                 "id": uuid.uuid4().hex[:10],
                 "fact": fact,
@@ -102,7 +120,7 @@ class MemoryStore:
             self._facts.append(entry)
             self._flush()
         logger.info("Saved fact: %s", fact[:80])
-        return entry["id"]
+        return entry["id"], source, True
 
     def recall(self, query: str) -> list[dict]:
         """Search facts by keyword match (case-insensitive)."""

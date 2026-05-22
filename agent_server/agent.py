@@ -23,7 +23,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 logger = logging.getLogger(__name__)
 
 from agent_server.config import AgentSettings
-from agent_server.memory import MemoryStore
+from agent_server.memory import MemoryStore, set_current_thread_id
 from agent_server.tools.filesystem import get_file_tools
 from agent_server.tools.memory import MemoryTool
 from agent_server.tools.shell_policy import SecureShellTool
@@ -250,6 +250,9 @@ def invoke_agent(
     as context.  Conversation history is handled automatically by LangGraph's
     SQLite checkpointer.
     """
+    thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+    set_current_thread_id(thread_id)
+
     enriched = list(messages)
 
     if memory_store:
