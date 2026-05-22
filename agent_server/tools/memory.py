@@ -19,7 +19,8 @@ class MemoryTool(BaseTool):
 
     Input must be a JSON string with an ``"action"`` field:
 
-    - ``{"action": "set", "key": "...", "value": ...}`` -- Create or update.
+    - ``{"action": "set", "key": "...", "value": ...}`` -- Create only (fails if key exists).
+    - ``{"action": "upsert", "key": "...", "value": ...}`` -- Create or update.
     - ``{"action": "get", "key": "..."}`` -- Get a single entry.
     - ``{"action": "search", "query": "..."}`` -- Find keys by substring.
     - ``{"action": "list"}`` -- List all entries.
@@ -29,7 +30,8 @@ class MemoryTool(BaseTool):
     name: str = "memory"
     description: str = (
         "Persistent key-value store. Input is JSON: "
-        "'set' with 'key' and 'value' to store (value can be any JSON type), "
+        "'set' with 'key' and 'value' to create (fails if key exists), "
+        "'upsert' with 'key' and 'value' to create or update, "
         "'get' with 'key' to retrieve, "
         "'search' with 'query' to find keys by substring, "
         "'list' to see all entries, "
@@ -52,6 +54,8 @@ class MemoryTool(BaseTool):
 
         if action == "set":
             return self._set(params)
+        elif action == "upsert":
+            return self._upsert(params)
         elif action == "get":
             return self._get(params)
         elif action == "search":
@@ -63,7 +67,7 @@ class MemoryTool(BaseTool):
         else:
             return (
                 f"Error: unknown action '{action}'. "
-                "Use 'set', 'get', 'search', 'list', or 'delete'."
+                "Use 'set', 'upsert', 'get', 'search', 'list', or 'delete'."
             )
 
     def _set(self, params: dict) -> str:
@@ -74,7 +78,23 @@ class MemoryTool(BaseTool):
         if "value" not in params:
             return "Error: 'value' is required."
         value = params["value"]
-        is_new = self._store.save(key, value)
+        created = self._store.save(key, value)
+        if not created:
+            return f"Key '{key}' already exists. Use 'upsert' to overwrite."
+        val_preview = json.dumps(value, ensure_ascii=False)
+        if len(val_preview) > 120:
+            val_preview = val_preview[:117] + "..."
+        return f"Created '{key}': {val_preview}"
+
+    def _upsert(self, params: dict) -> str:
+        key = params.get("key", "")
+        if not isinstance(key, str) or not key.strip():
+            return "Error: 'key' (string) is required."
+        key = key.strip()
+        if "value" not in params:
+            return "Error: 'value' is required."
+        value = params["value"]
+        is_new = self._store.upsert(key, value)
         val_preview = json.dumps(value, ensure_ascii=False)
         if len(val_preview) > 120:
             val_preview = val_preview[:117] + "..."

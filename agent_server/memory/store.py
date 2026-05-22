@@ -102,8 +102,22 @@ class MemoryStore:
         )
 
     def save(self, key: str, value: Any) -> bool:
-        """Upsert an entry. Returns ``True`` if the key was created,
-        ``False`` if an existing key was updated.
+        """Create a new entry. Returns ``True`` if created, ``False`` if
+        the key already exists (no modification is made).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            if key in self._entries:
+                logger.info("Key already exists: %s", key)
+                return False
+            self._entries[key] = {"value": value, "timestamp": now}
+            self._flush()
+        logger.info("Created key=%s", key)
+        return True
+
+    def upsert(self, key: str, value: Any) -> bool:
+        """Create or update an entry. Returns ``True`` if the key was
+        created, ``False`` if an existing key was updated.
         """
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
