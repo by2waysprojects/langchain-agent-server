@@ -59,7 +59,7 @@ def create_app(agent, *, memory_store: MemoryStore | None = None) -> FastAPI:
         internal_thread_id = f"{API_THREAD_PREFIX}{client_id}"
 
         config = {"configurable": {"thread_id": internal_thread_id}}
-        messages = [{"role": "user", "content": req.content}]
+        messages = [{"role": "user", "content": f"[user: {client_id}] {req.content}"}]
 
         with reject_writes_context():
             response = invoke_agent(

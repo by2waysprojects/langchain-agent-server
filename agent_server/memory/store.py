@@ -19,19 +19,28 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_current_thread_id = threading.local()
-
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+_active_thread_id: str = "unknown"
+_active_thread_id_lock = threading.Lock()
 
 
 def set_current_thread_id(thread_id: str) -> None:
-    """Set the thread ID for the current thread (used as source in save)."""
-    _current_thread_id.value = thread_id
+    """Set the active thread ID (used as default source in save).
+
+    Uses a module-level variable instead of threading.local because
+    LangGraph may execute tools in threadpool threads that don't
+    inherit thread-local state.
+    """
+    global _active_thread_id
+    with _active_thread_id_lock:
+        _active_thread_id = thread_id
 
 
 def get_current_thread_id() -> str:
-    """Get the thread ID for the current thread, or 'unknown'."""
-    return getattr(_current_thread_id, "value", "unknown")
+    """Get the active thread ID."""
+    with _active_thread_id_lock:
+        return _active_thread_id
 
 
 def _parse_ts(ts: str | None) -> datetime:
