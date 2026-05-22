@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -220,11 +221,9 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
         settings = AgentSettings()
 
     system_prompt = load_system_prompt(settings.agent_instructions_path)
-    memory_store = MemoryStore(
-        path=settings.agent_memory_path,
-        ttl_days=settings.agent_memory_ttl_days,
-    )
+    os.makedirs(Path(settings.agent_checkpoints_path).parent, exist_ok=True)
     conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
+    memory_store = MemoryStore(conn=conn, ttl_days=settings.agent_memory_ttl_days)
     checkpointer = SqliteSaver(conn)
     checkpointer.setup()
     _purge_old_checkpoints(conn, settings.agent_memory_ttl_days)

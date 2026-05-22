@@ -1,4 +1,4 @@
-"""Long-term memory store backed by a JSON file on disk.
+"""Long-term memory store backed by SQLite.
 
 Generic key-value store where each entry has a unique string key and
 an arbitrary JSON value.  The timestamp is managed automatically by
@@ -7,21 +7,29 @@ the framework.
 Shared across all interfaces (CLI, clock, API) via a single instance.
 
 Thread-safe: all reads/writes are protected by a lock.
+Multi-process safe: SQLite handles file-level locking natively.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS memory (
+    key       TEXT PRIMARY KEY,
+    value     TEXT NOT NULL,
+    timestamp TEXT NOT NULL
+)
+"""
 
 
 def _parse_ts(ts: str | None) -> datetime:
@@ -38,80 +46,70 @@ def _parse_ts(ts: str | None) -> datetime:
 
 
 class MemoryStore:
-    """Key-value store persisted as a JSON file.
+    """Key-value store persisted in a SQLite table.
 
-    On disk the file is a JSON object mapping string keys to entry dicts::
+    The ``memory`` table has three columns::
 
-        {
-            "stock": {"value": 10, "timestamp": "..."},
-            "queue": {"value": [...], "timestamp": "..."}
-        }
+        key       TEXT PRIMARY KEY
+        value     TEXT  (JSON-serialised)
+        timestamp TEXT  (ISO 8601)
+
+    Can share the same SQLite file as the LangGraph checkpointer or
+    use its own file.  Multi-process safe via SQLite file locking.
     """
 
     def __init__(
         self,
-        path: str | Path = "/app/workspace/memory.json",
+        conn: sqlite3.Connection,
         ttl_days: int = 0,
     ) -> None:
-        self._path = Path(path)
+        self._conn = conn
         self._lock = threading.Lock()
         self._ttl_days = ttl_days
-        self._entries: dict[str, dict] = {}
-        self._load()
+        self._setup()
 
-    def _load(self) -> None:
-        if self._path.is_file():
-            try:
-                data = json.loads(self._path.read_text(encoding="utf-8"))
-                self._entries = data if isinstance(data, dict) else {}
-                logger.info(
-                    "Loaded %d entries from %s", len(self._entries), self._path
-                )
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Could not load memory file: %s", exc)
-                self._entries = {}
-        else:
-            self._entries = {}
+    def _setup(self) -> None:
+        with self._lock:
+            self._conn.execute(_CREATE_TABLE)
+            self._conn.commit()
         removed = self._purge_expired()
         if removed:
             logger.info(
                 "Purged %d expired entries (TTL=%d days)", removed, self._ttl_days
             )
+        count = self._conn.execute("SELECT COUNT(*) FROM memory").fetchone()[0]
+        logger.info("Memory store ready: %d entries", count)
 
     def _purge_expired(self) -> int:
         """Remove entries older than ``_ttl_days``. Returns count removed."""
         if self._ttl_days <= 0:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self._ttl_days)
-        expired = [
-            k
-            for k, v in self._entries.items()
-            if _parse_ts(v.get("timestamp")) < cutoff
-        ]
-        for k in expired:
-            del self._entries[k]
-        if expired:
-            self._flush()
-        return len(expired)
-
-    def _flush(self) -> None:
-        os.makedirs(self._path.parent, exist_ok=True)
-        self._path.write_text(
-            json.dumps(self._entries, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=self._ttl_days)
+        ).isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM memory WHERE timestamp < ?", (cutoff,)
+            )
+            self._conn.commit()
+            return cursor.rowcount
 
     def save(self, key: str, value: Any) -> bool:
         """Create a new entry. Returns ``True`` if created, ``False`` if
         the key already exists (no modification is made).
         """
         now = datetime.now(timezone.utc).isoformat()
+        val_json = json.dumps(value, ensure_ascii=False)
         with self._lock:
-            if key in self._entries:
+            try:
+                self._conn.execute(
+                    "INSERT INTO memory (key, value, timestamp) VALUES (?, ?, ?)",
+                    (key, val_json, now),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
                 logger.info("Key already exists: %s", key)
                 return False
-            self._entries[key] = {"value": value, "timestamp": now}
-            self._flush()
         logger.info("Created key=%s", key)
         return True
 
@@ -120,10 +118,17 @@ class MemoryStore:
         created, ``False`` if an existing key was updated.
         """
         now = datetime.now(timezone.utc).isoformat()
+        val_json = json.dumps(value, ensure_ascii=False)
         with self._lock:
-            is_new = key not in self._entries
-            self._entries[key] = {"value": value, "timestamp": now}
-            self._flush()
+            existing = self._conn.execute(
+                "SELECT 1 FROM memory WHERE key = ?", (key,)
+            ).fetchone()
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memory (key, value, timestamp) VALUES (?, ?, ?)",
+                (key, val_json, now),
+            )
+            self._conn.commit()
+        is_new = existing is None
         verb = "Created" if is_new else "Updated"
         logger.info("%s key=%s", verb, key)
         return is_new
@@ -131,31 +136,42 @@ class MemoryStore:
     def get(self, key: str) -> dict | None:
         """Return the full entry for *key*, or ``None``."""
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is None:
-                return None
-            return {"key": key, **entry}
+            row = self._conn.execute(
+                "SELECT value, timestamp FROM memory WHERE key = ?", (key,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"key": key, "value": json.loads(row[0]), "timestamp": row[1]}
 
     def search(self, query: str) -> list[dict]:
         """Find entries whose key contains *query* (case-insensitive)."""
-        q = query.lower()
+        pattern = f"%{query}%"
         with self._lock:
-            return [
-                {"key": k, **v}
-                for k, v in self._entries.items()
-                if q in k.lower()
-            ]
+            rows = self._conn.execute(
+                "SELECT key, value, timestamp FROM memory WHERE key LIKE ? COLLATE NOCASE",
+                (pattern,),
+            ).fetchall()
+        return [
+            {"key": r[0], "value": json.loads(r[1]), "timestamp": r[2]}
+            for r in rows
+        ]
 
     def list_all(self) -> dict[str, dict]:
         """Return all entries as ``{key: {value, timestamp}}``."""
         with self._lock:
-            return dict(self._entries)
+            rows = self._conn.execute(
+                "SELECT key, value, timestamp FROM memory"
+            ).fetchall()
+        return {
+            r[0]: {"value": json.loads(r[1]), "timestamp": r[2]}
+            for r in rows
+        }
 
     def remove(self, key: str) -> bool:
         """Remove an entry by key. Returns ``True`` if found and removed."""
         with self._lock:
-            if key in self._entries:
-                del self._entries[key]
-                self._flush()
-                return True
-        return False
+            cursor = self._conn.execute(
+                "DELETE FROM memory WHERE key = ?", (key,)
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0

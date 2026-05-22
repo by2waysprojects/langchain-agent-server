@@ -25,7 +25,7 @@ You bring your project code. This framework provides:
 │                      │  ├─ SecureShellTool       │  │ (SQLite)         │  │
 │  ┌───────────────┐   │  ├─ FileManagementToolkit │  │                  │  │
 │  │ Your project  │<──│  ├─ MemoryTool ───────────┼─>│ MemoryStore      │  │
-│  │ code + CLIs   │   │  └─ Your custom tools     │  │ (memory.json)    │  │
+│  │ code + CLIs   │   │  └─ Your custom tools     │  │ (SQLite)         │  │
 │  └───────────────┘   └──┬──────────┬──────────┬──┘  └──────────────────┘  │
 │                         │          │          │                           │
 │           ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐              │
@@ -301,7 +301,7 @@ All file operations go through LangChain's `FileManagementToolkit`, sandboxed to
 
 ## Memory Model
 
-The agent has a persistent **key-value store** (`memory.json`) where each entry has a unique string key and an arbitrary JSON value. Metadata is managed automatically:
+The agent has a persistent **key-value store** (SQLite `memory` table) where each entry has a unique string key and an arbitrary JSON value. Metadata is managed automatically:
 
 | Field | Type | Managed by |
 |-------|------|------------|
@@ -309,20 +309,14 @@ The agent has a persistent **key-value store** (`memory.json`) where each entry 
 | **value** | any JSON (int, string, array, object, bool, null) | App |
 | **timestamp** | ISO 8601 | Framework (last update time) |
 
-Example `memory.json`:
-
-```json
-{
-  "stock": {"value": 10, "timestamp": "2026-05-22T20:00:00+00:00"},
-  "queue": {"value": [{"user": "alice", "position": 1}], "timestamp": "2026-05-22T20:01:00+00:00"}
-}
-```
+The memory table lives inside the same SQLite file as the conversation checkpoints (`checkpoints.sqlite`), so a single volume mount persists everything. Multi-process safe via SQLite file locking.
 
 The MemoryTool exposes these actions to the agent:
 
 | Action | Input | Description |
 |--------|-------|-------------|
-| `set` | `key`, `value` | Create or update an entry |
+| `set` | `key`, `value` | Create a new entry (fails if key exists) |
+| `upsert` | `key`, `value` | Create or update an entry |
 | `get` | `key` | Retrieve one entry |
 | `search` | `query` | Find entries by key substring |
 | `list` | -- | List all entries |
@@ -332,10 +326,12 @@ The MemoryTool exposes these actions to the agent:
 
 Both memory stores apply a TTL (Time-To-Live) policy controlled by `AGENT_MEMORY_TTL_DAYS` (default: 3 days, `0` to disable):
 
-| Store | File | Purge trigger | What gets deleted |
-|-------|------|---------------|-------------------|
-| **MemoryStore** | `memory.json` | On startup | Entries whose `timestamp` is older than TTL |
-| **Checkpoints** | `checkpoints.sqlite` | On startup | Checkpoint rows whose UUID-v1 timestamp is older than TTL |
+| Store | Table | Purge trigger | What gets deleted |
+|-------|-------|---------------|-------------------|
+| **MemoryStore** | `memory` | On startup | Entries whose `timestamp` is older than TTL |
+| **Checkpoints** | `checkpoints` | On startup | Checkpoint rows whose UUID-v1 timestamp is older than TTL |
+
+Both tables live in the same SQLite file (`checkpoints.sqlite`).
 
 The purge runs automatically at agent startup. No manual cleanup is needed.
 
@@ -350,8 +346,7 @@ The purge runs automatically at agent startup. No manual cleanup is needed.
 | `AGENT_MODEL` | No | `claude-sonnet-4-20250514` | Model identifier |
 | `AGENT_INSTRUCTIONS_PATH` | No | `AGENTS.md` | Path to system prompt (also contains scheduled tasks) |
 | `AGENT_STARTUP_PROMPT_PATH` | No | `STARTUP.md` | Path to startup prompt |
-| `AGENT_MEMORY_PATH` | No | `/app/workspace/memory.json` | Long-term memory file |
-| `AGENT_CHECKPOINTS_PATH` | No | `/app/workspace/checkpoints.sqlite` | SQLite file for conversation checkpoints |
+| `AGENT_CHECKPOINTS_PATH` | No | `/app/workspace/checkpoints.sqlite` | SQLite file for checkpoints and long-term memory |
 | `AGENT_MEMORY_TTL_DAYS` | No | `3` | Retention period in days for memory facts and checkpoints. `0` = keep forever |
 | `AGENT_HTTP_ENABLED` | No | `true` | Enable the HTTP API server |
 | `AGENT_HTTP_PORT` | No | `8080` | Port for the HTTP API server |
@@ -378,7 +373,7 @@ langchain-agent-server/
 │   │   └── main.py              # Periodic task scheduler
 │   ├── memory/
 │   │   ├── __init__.py
-│   │   └── store.py                 # Key-value store (JSON on disk)
+│   │   └── store.py                 # Key-value store (SQLite)
 │   └── tools/
 │       ├── __init__.py
 │       ├── shell_policy.py          # Whitelist + confirm + blocked patterns
