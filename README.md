@@ -355,8 +355,13 @@ langchain-agent-server/
 │       ├── shell_policy.py          # Whitelist + confirm + blocked patterns
 │       ├── filesystem.py            # Sandboxed file management
 │       └── memory.py                # MemoryTool for the agent
+├── examples/
+│   ├── workspace-monitor/           # Periodic file scanning example
+│   └── ticket-queue/                # Concurrent ticket management example
 ├── AGENTS.md                    # System prompt + scheduled tasks
 ├── STARTUP.md                   # Startup behavior (boot sequence)
 ├── Dockerfile                   # Container definition
 └── requirements.txt             # Framework dependencies
 ```
+
+See `examples/` for working demos (each has its own README).
