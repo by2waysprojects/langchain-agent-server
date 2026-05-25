@@ -222,11 +222,12 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
 
     system_prompt = load_system_prompt(settings.agent_instructions_path)
     os.makedirs(Path(settings.agent_checkpoints_path).parent, exist_ok=True)
-    conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
-    memory_store = MemoryStore(conn=conn, ttl_days=settings.agent_memory_ttl_days)
-    checkpointer = SqliteSaver(conn)
+    mem_conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
+    memory_store = MemoryStore(conn=mem_conn, ttl_days=settings.agent_memory_ttl_days)
+    cp_conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
+    checkpointer = SqliteSaver(cp_conn)
     checkpointer.setup()
-    _purge_old_checkpoints(conn, settings.agent_memory_ttl_days)
+    _purge_old_checkpoints(cp_conn, settings.agent_memory_ttl_days)
     tools = build_tools(settings, memory_store)
     agent = build_agent(
         tools=tools,
