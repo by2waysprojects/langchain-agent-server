@@ -381,7 +381,8 @@ langchain-agent-server/
 │       └── memory.py                # MemoryTool for the agent
 ├── examples/
 │   ├── workspace-monitor/           # Periodic file scanning example
-│   └── ticket-queue/                # Concurrent ticket management example
+│   ├── ticket-queue/                # Concurrent ticket management example
+│   └── pr-monitor/                  # GitHub PR tracking with human-in-the-loop
 ├── AGENTS.md                    # System prompt + scheduled tasks
 ├── STARTUP.md                   # Startup behavior (boot sequence)
 ├── Dockerfile                   # Container definition
