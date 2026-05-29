@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from threading import Event, Lock, Thread
 
 from agent_server.agent import invoke_agent
+from agent_server.batch.main import run_batch
 from agent_server.memory import MemoryStore
 
 _fd_lock = Lock()
@@ -167,20 +168,9 @@ def cron_matches_now(cron_expr: str) -> bool:
 
 
 def _run_task(agent, task: ScheduledTask, memory_store: MemoryStore | None) -> None:
-    config = {"configurable": {"thread_id": CLOCK_THREAD_ID}}
     label = task.instruction[:50]
     logger.info("Running scheduled task: %s", label)
-    try:
-        with _suppress_fd():
-            invoke_agent(
-                agent,
-                [{"role": "user", "content": task.instruction}],
-                config,
-                memory_store=memory_store,
-            )
-        logger.info("Task completed: %s", label)
-    except Exception as exc:
-        logger.error("Scheduled task failed: %s — %s", label, exc)
+    run_batch(agent, task.instruction, memory_store)
 
 
 def _run_loop(

@@ -11,35 +11,39 @@ You bring your project code. This framework provides:
 3. **Two markdown files** that control the agent: `AGENTS.md` (system prompt + scheduled tasks) and `STARTUP.md` (boot behavior).
 4. **An interactive REPL** where a human supervises the agent and approves write operations.
 5. **A clock scheduler** that runs agent tasks on a cron schedule -- no human needed.
-6. **An HTTP API** for programmatic access from frontends, bots, CI/CD, and webhooks.
-7. **A container** that runs as a non-root user with everything pre-installed.
+6. **Multi-step plan execution** -- the agent can break complex tasks into sequential or parallel steps.
+7. **An HTTP API** for programmatic access from frontends, bots, CI/CD, and webhooks.
+8. **A container** that runs as a non-root user with everything pre-installed.
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│  Container                                                                │
-│                                                                           │
-│  ┌───────────────┐   ┌───────────────────────────┐  ┌──────────────────┐  │
-│  │ AGENTS.md     │──>│ Claude Agent              │  │ Memory           │  │
-│  │ (your prompt) │   │                           │  │                  │  │
-│  └───────────────┘   │  tools:                   │  │ Checkpoints      │  │
-│                      │  ├─ SecureShellTool       │  │ (SQLite)         │  │
-│  ┌───────────────┐   │  ├─ FileManagementToolkit │  │                  │  │
-│  │ Your project  │<──│  ├─ MemoryTool ───────────┼─>│ MemoryStore      │  │
-│  │ code + CLIs   │   │  └─ Your custom tools     │  │ (SQLite)         │  │
-│  └───────────────┘   └──┬──────────┬──────────┬──┘  └──────────────────┘  │
-│                         │          │          │                           │
-│           ┌─────────────┴┐ ┌───────┴───────┐ ┌┴────────────┐              │
-│           │ CLI (REPL)   │ │ API (HTTP)    │ │ Clock       │              │
-│           │ human-in-    │ │ writes auto-  │ │ scheduled   │              │
-│           │ the-loop     │ │ rejected      │ │ tasks       │              │
-│           └──────────────┘ └───────┬───────┘ └─────────────┘              │
-│                                    │ :8080                                │
-└────────────────────────────────────┼──────────────────────────────────────┘
-                                     │
-                          ┌──────────┴─────────┐
-                          │ External clients   │
-                          │ (web app, bot, CI) │
-                          └────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Container (single process)                                                 │
+│                                                                             │
+│  ┌──────────────┐    ┌──────────────────────────┐  ┌──────────────────────┐ │
+│  │ AGENTS.md    │───>│ Claude Agent             │  │ checkpoints.sqlite   │ │
+│  │ (your prompt)│    │                          │  │                      │ │
+│  └──────────────┘    │  tools:                  │  │ ┌──────────────────┐ │ │
+│                      │  ├─ SecureShellTool      │  │ │ checkpoints      │ │ │
+│  ┌──────────────┐    │  ├─ FileManagementToolkit│  │ │ (LangGraph)      │ │ │
+│  │ Your project │<───│  ├─ MemoryTool ──────────┼─>│ ├──────────────────┤ │ │
+│  │ code + CLIs  │    │  └─ Your custom tools    │  │ │ memory           │ │ │
+│  └──────────────┘    └──┬──────────┬─────────┬──┘  │ │ (key-value)      │ │ │
+│                         │          │         │     └─└──────────────────┘─┘ │
+│           ┌─────────────┴┐ ┌───────┴─────┐ ┌─┴───────────┐                  │
+│           │ CLI (REPL)   │ │ API (HTTP)  │ │ Clock       │                  │
+│           │ human-in-    │ │ shell writes│ │ scheduled   │                  │
+│           │ the-loop     │ │ auto-reject │ │ tasks       │                  │
+│           │              │ │             │ │             │                  │
+│           │ run_batch    │ │invoke_agent │ │ run_batch   │                  │
+│           │ (multi-step) │ │(single-shot)│ │ (multi-step)│                  │
+│           └──────────────┘ └──────┬──────┘ └─────────────┘                  │
+│                                   │ :8080                                   │
+└───────────────────────────────────┼─────────────────────────────────────────┘
+                                    │                                       
+                         ┌──────────┴─────────┐       
+                         │ External clients   │
+                         │ (web app, bot, CI) │
+                         └────────────────────┘
 ```
 
 ## Integration Guide
@@ -57,27 +61,30 @@ your-project/
     │   ├── __main__.py
     │   ├── config.py
     │   ├── agent.py
-    │   ├── cli/
-    │   │   ├── __init__.py
-    │   │   └── main.py
     │   ├── api/
     │   │   ├── __init__.py
     │   │   └── app.py           # HTTP API (FastAPI)
+    │   ├── batch/
+    │   │   ├── __init__.py
+    │   │   └── main.py          # Multi-step plan execution
+    │   ├── cli/
+    │   │   ├── __init__.py
+    │   │   └── main.py
     │   ├── clock/
     │   │   ├── __init__.py
     │   │   └── main.py          # Periodic task scheduler
     │   ├── memory/
     │   │   ├── __init__.py
-    │   │   └── store.py             # Long-term memory (JSON on disk)
+    │   │   └── store.py         # Key-value store (SQLite)
     │   └── tools/
     │       ├── __init__.py
     │       ├── shell_policy.py
     │       ├── filesystem.py
-    │       └── memory.py            # MemoryTool for the agent
+    │       └── memory.py        # MemoryTool for the agent
     ├── AGENTS.md                # <-- edit this (instructions + scheduled tasks)
     ├── STARTUP.md               # <-- edit this (boot behavior)
-    ├── Dockerfile               # <-- customize this for your project
-    └── requirements.txt         # Framework dependencies
+    ├── Dockerfile.agent         # <-- customize this for your project
+    └── requirements-agent.txt   # Framework dependencies
 ```
 
 ### 2. Add your CLIs to the shell policy
@@ -130,16 +137,17 @@ class MyApiTool(BaseTool):
         # ... wrap your client logic here ...
 ```
 
-Register them in `agent_server/cli/main.py`:
+Register them in `agent_server/agent.py`:
 
 ```python
 from agent_server.tools.my_tools import MyApiTool
 
-def _build_tools(settings: AgentSettings):
+def build_tools(settings: AgentSettings, memory_store: MemoryStore) -> list[BaseTool]:
     file_tools = get_file_tools(settings.agent_workspace_dir)
     shell_tool = SecureShellTool()
+    memory_tool = MemoryTool(store=memory_store)
     my_tool = MyApiTool()
-    return [*file_tools, shell_tool, my_tool]
+    return [*file_tools, shell_tool, memory_tool, my_tool]
 ```
 
 ### 4. Write your AGENTS.md and STARTUP.md
@@ -335,6 +343,18 @@ Both tables live in the same SQLite file (`checkpoints.sqlite`).
 
 The purge runs automatically at agent startup. No manual cleanup is needed.
 
+## Execution Model
+
+The framework has two ways of running tasks:
+
+| Interface | Method | Behavior |
+|-----------|--------|----------|
+| **CLI** | `run_batch` | Sends user input to the LLM. If the LLM responds with a JSON plan (`{"tasks": [...], "parallel": true/false}`), each step is executed automatically -- in parallel or sequentially. Otherwise the response is printed directly. |
+| **Clock** | `run_batch` | Same as CLI but runs silently (stdout/stderr suppressed). |
+| **API** | `invoke_agent` | Single-shot: sends the message, returns the response. No plan execution -- the agent handles everything in one invocation. |
+
+This means CLI and Clock tasks can be multi-step: the LLM decides whether a task needs to be broken down and returns a plan. Each step runs in its own thread with up to 2 retries on failure.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -362,31 +382,34 @@ langchain-agent-server/
 │   ├── __main__.py              # python -m agent_server
 │   ├── config.py                # Pydantic settings from env vars
 │   ├── agent.py                 # Agent factory (LangChain + Claude)
-│   ├── cli/
-│   │   ├── __init__.py
-│   │   └── main.py              # Interactive REPL + startup prompt
 │   ├── api/
 │   │   ├── __init__.py
 │   │   └── app.py               # HTTP API (FastAPI)
+│   ├── batch/
+│   │   ├── __init__.py
+│   │   └── main.py              # Multi-step plan execution
+│   ├── cli/
+│   │   ├── __init__.py
+│   │   └── main.py              # Interactive REPL + startup prompt
 │   ├── clock/
 │   │   ├── __init__.py
 │   │   └── main.py              # Periodic task scheduler
 │   ├── memory/
 │   │   ├── __init__.py
-│   │   └── store.py                 # Key-value store (SQLite)
+│   │   └── store.py             # Key-value store (SQLite)
 │   └── tools/
 │       ├── __init__.py
-│       ├── shell_policy.py          # Whitelist + confirm + blocked patterns
-│       ├── filesystem.py            # Sandboxed file management
-│       └── memory.py                # MemoryTool for the agent
+│       ├── shell_policy.py      # Whitelist + confirm + blocked patterns
+│       ├── filesystem.py        # Sandboxed file management
+│       └── memory.py            # MemoryTool for the agent
 ├── examples/
-│   ├── workspace-monitor/           # Periodic file scanning example
-│   ├── ticket-queue/                # Concurrent ticket management example
-│   └── pr-monitor/                  # GitHub PR tracking with human-in-the-loop
-├── AGENTS.md                    # System prompt + scheduled tasks
-├── STARTUP.md                   # Startup behavior (boot sequence)
-├── Dockerfile                   # Container definition
-└── requirements.txt             # Framework dependencies
+│   ├── workspace-monitor/       # Periodic file scanning example
+│   ├── ticket-queue/            # Concurrent ticket management example
+│   └── pr-monitor/              # GitHub PR tracking with human-in-the-loop
+├── AGENTS.md                    # System prompt + scheduled tasks (template)
+├── STARTUP.md                   # Startup behavior (template)
+├── Dockerfile.agent             # Container definition
+└── requirements-agent.txt       # Framework dependencies
 ```
 
 See `examples/` for working demos (each has its own README).

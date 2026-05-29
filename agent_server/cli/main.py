@@ -10,10 +10,11 @@ import sys
 from pathlib import Path
 
 from agent_server.agent import invoke_agent
+from agent_server.batch.main import run_batch
 from agent_server.memory import MemoryStore
 
 DEFAULT_STARTUP_PROMPT_PATH = "STARTUP.md"
-CLI_THREAD_ID = "1"
+STARTUP_THREAD_ID = "cli-startup"
 
 
 def _load_startup_prompt(path: str | Path = DEFAULT_STARTUP_PROMPT_PATH) -> str:
@@ -33,7 +34,7 @@ def run_cli(
     memory_store: MemoryStore | None = None,
 ) -> None:
     """Run a blocking REPL loop, forwarding user input to *agent*."""
-    config = {"configurable": {"thread_id": CLI_THREAD_ID}}
+    config = {"configurable": {"thread_id": STARTUP_THREAD_ID}}
 
     try:
         print("\nInitializing — scanning environment...\n")
@@ -63,15 +64,6 @@ def run_cli(
             break
 
         try:
-            response = invoke_agent(
-                agent,
-                [{"role": "user", "content": user_input}],
-                config,
-                memory_store=memory_store,
-            )
-            if response:
-                print(f"\n{response}")
-            else:
-                print("\n[No response from agent]")
+            run_batch(agent, user_input, memory_store, verbose=True)
         except Exception as exc:
             print(f"\n[Agent error] {exc}", file=sys.stderr)

@@ -44,11 +44,14 @@ class MemoryTool(BaseTool):
         super().__init__(**kwargs)
         object.__setattr__(self, "_store", store)
 
-    def _run(self, tool_input: str, **kwargs: Any) -> str:
-        try:
-            params = json.loads(tool_input)
-        except json.JSONDecodeError:
-            return "Error: input must be valid JSON."
+    def _run(self, tool_input: str = "", **kwargs: Any) -> str:
+        if not tool_input and kwargs:
+            params = kwargs
+        else:
+            try:
+                params = json.loads(tool_input)
+            except json.JSONDecodeError:
+                return "Error: input must be valid JSON."
 
         action = params.get("action", "").lower()
 

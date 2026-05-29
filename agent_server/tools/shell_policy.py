@@ -53,6 +53,7 @@ ALLOWED_BINARIES: frozenset[str] = frozenset(
         # Text / data processing (read-only)
         "grep",
         "rg",
+        "sed",
         "find",
         "ls",
         "cat",
@@ -73,6 +74,7 @@ ALLOWED_BINARIES: frozenset[str] = frozenset(
         "printf",
         "date",
         "env",
+        "printenv",
         "whoami",
         "which",
         "pwd",
@@ -148,7 +150,7 @@ BLOCKED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bkill\s+-9\b"), "kill -9 is not permitted"),
     (re.compile(r"\bkillall\b"), "killall is not permitted"),
     (re.compile(r"\bpkill\b"), "pkill is not permitted"),
-    (re.compile(r"\bdocker\b"), "docker is not permitted inside the agent container"),
+    (re.compile(r"^docker\b|;\s*docker\b|&&\s*docker\b"), "docker is not permitted inside the agent container"),
     (re.compile(r"\bpodman\b.*--privileged"), "privileged podman is not permitted"),
 ]
 
@@ -182,7 +184,13 @@ def _is_reject_writes() -> bool:
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _extract_tokens(command: str) -> list[str] | None:
-    """Parse *command* into tokens, skipping env prefixes and var assignments."""
+    """Parse *command* into tokens, skipping env prefixes and var assignments.
+
+    Handles ``env VAR=val cmd ...`` prefixes: strips leading ``env`` and
+    ``KEY=VALUE`` tokens so the returned list starts with the real binary.
+    When ``env`` is the *only* token (or followed only by var assignments),
+    it is kept as the binary itself.
+    """
     try:
         tokens = shlex.split(command)
     except ValueError:
@@ -194,10 +202,13 @@ def _extract_tokens(command: str) -> list[str] | None:
         if skip_prefix:
             if "=" in token:
                 continue
-            if token == "env":
+            if token == "env" and not meaningful:
                 continue
             skip_prefix = False
         meaningful.append(token)
+
+    if not meaningful and tokens:
+        return [tokens[0]]
     return meaningful or None
 
 
@@ -227,14 +238,8 @@ def _check_gh_write(tokens: list[str]) -> bool:
 
 # ── Core policy ───────────────────────────────────────────────────────────
 
-def check_command(command: str, *, confirmed: bool = False) -> str | None:
-    """Validate *command* against the security policy.
-
-    Returns:
-        ``None`` -- allowed, execute immediately.
-        ``"BLOCKED: ..."`` -- hard block, never execute.
-        ``"CONFIRM: ..."`` -- needs user confirmation before execution.
-    """
+def _check_single_command(command: str, *, confirmed: bool = False) -> str | None:
+    """Validate a single (non-piped) command segment."""
     tokens = _extract_tokens(command)
     if tokens is None:
         return "BLOCKED: could not parse command"
@@ -282,6 +287,54 @@ def check_command(command: str, *, confirmed: bool = False) -> str | None:
         return None
 
     return None
+
+
+_PIPE_RE = re.compile(
+    r"""'[^']*'|"[^"]*"|(\|)""",
+    re.VERBOSE,
+)
+
+
+def _split_pipeline(command: str) -> list[str]:
+    """Split *command* on un-quoted ``|`` characters.
+
+    Pipes inside single- or double-quoted strings are preserved as literal
+    characters and do NOT act as segment separators.
+    """
+    segments: list[str] = []
+    last = 0
+    for m in _PIPE_RE.finditer(command):
+        if m.group(1) is not None:
+            segments.append(command[last:m.start()])
+            last = m.end()
+    segments.append(command[last:])
+    return [s.strip() for s in segments if s.strip()]
+
+
+def check_command(command: str, *, confirmed: bool = False) -> str | None:
+    """Validate *command* against the security policy.
+
+    Supports pipelines (``cmd1 | cmd2 | ...``).  Each segment is validated
+    independently; the overall command is allowed only if every segment
+    passes.
+
+    Returns:
+        ``None`` -- allowed, execute immediately.
+        ``"BLOCKED: ..."`` -- hard block, never execute.
+        ``"CONFIRM: ..."`` -- needs user confirmation before execution.
+    """
+    segments = _split_pipeline(command)
+    confirm_result: str | None = None
+
+    for segment in segments:
+        verdict = _check_single_command(segment, confirmed=confirmed)
+        if verdict is not None:
+            if verdict.startswith("BLOCKED:"):
+                return verdict
+            if verdict.startswith("CONFIRM:") and confirm_result is None:
+                confirm_result = verdict
+
+    return confirm_result
 
 
 # ── Tool class ────────────────────────────────────────────────────────────

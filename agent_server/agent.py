@@ -11,6 +11,7 @@ import logging
 import os
 import sqlite3
 import uuid
+import time
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
@@ -95,21 +96,37 @@ class _ChatAnthropicProxy(ChatAnthropic):
     proxy_key: str = ""
     ssl_verify: bool = True
 
+    _MAX_RETRIES: int = 5
+    _RETRY_BASE_DELAY: float = 2.0
+
     def _create(self, payload: dict) -> anthropic.types.Message:
         model = payload.pop("model", self.model)
         payload["anthropic_version"] = "vertex-2023-10-16"
 
         url = f"{self.proxy_url.rstrip('/')}/sonnet/models/{model}:streamRawPredict"
         client = httpx.Client(verify=self.ssl_verify)
-        resp = client.post(
-            url,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {self.proxy_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=600,
-        )
+
+        for attempt in range(self._MAX_RETRIES):
+            resp = client.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self.proxy_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=600,
+            )
+            if resp.status_code == 429:
+                delay = self._RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "Rate limited (429), retrying in %.1fs (attempt %d/%d)",
+                    delay, attempt + 1, self._MAX_RETRIES,
+                )
+                time.sleep(delay)
+                continue
+            resp.raise_for_status()
+            return anthropic.types.Message(**resp.json())
+
         resp.raise_for_status()
         return anthropic.types.Message(**resp.json())
 
@@ -223,7 +240,7 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
     system_prompt = load_system_prompt(settings.agent_instructions_path)
     os.makedirs(Path(settings.agent_checkpoints_path).parent, exist_ok=True)
     mem_conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
-    memory_store = MemoryStore(conn=mem_conn, ttl_days=settings.agent_memory_ttl_days)
+    memory_store = MemoryStore(conn=mem_conn, ttl_days=0)
     cp_conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
     checkpointer = SqliteSaver(cp_conn)
     checkpointer.setup()

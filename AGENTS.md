@@ -38,16 +38,18 @@ Use this tool to query your project's API. Actions: ...
 
 ### Memory Tool (`memory`)
 
-You have a long-term memory that persists across sessions. Use it to remember facts, preferences, and context. Input is JSON:
+You have a persistent key-value store (SQLite) that survives restarts. Keys are unique strings, values can be any JSON type. Input is JSON:
 
-| Action | Input | Example |
-|--------|-------|---------|
-| Remember | `{"action": "remember", "fact": "..."}` | Save a fact for later |
-| Recall | `{"action": "recall", "query": "..."}` | Search stored facts by keywords |
-| List | `{"action": "list"}` | See all stored facts |
-| Forget | `{"action": "forget", "id": "..."}` | Remove a fact by id |
+| Action | Input | Description |
+|--------|-------|-------------|
+| `set` | `{"action": "set", "key": "...", "value": ...}` | Create a new entry (fails if key exists) |
+| `upsert` | `{"action": "upsert", "key": "...", "value": ...}` | Create or update an entry |
+| `get` | `{"action": "get", "key": "..."}` | Retrieve one entry |
+| `search` | `{"action": "search", "query": "..."}` | Find entries by key substring |
+| `list` | `{"action": "list"}` | List all entries |
+| `delete` | `{"action": "delete", "key": "..."}` | Remove an entry by key |
 
-Relevant memories are also injected automatically as context before each interaction. Use `remember` proactively when you learn something important about the project, the user, or recurring patterns.
+Relevant memories are also injected automatically as context before each interaction. Use `set`/`upsert` proactively when you learn something important about the project, the user, or recurring patterns.
 
 ### Shell Commands
 
