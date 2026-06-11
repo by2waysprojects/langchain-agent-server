@@ -33,8 +33,8 @@ You bring your project code. This framework provides:
 │  ┌──────────────┐       │          │         │     │ │ token_usage      │ │ │
 │  │ TokenTracker │───────┼──────────┼─────────┼────>│ │ (per-call stats) │ │ │
 │  │ (per LLM     │       │          │         │     └─└──────────────────┘─┘ │
-│  │  API call)   │       │          │         │                               │
-│  └──────────────┘       │          │         │                               │
+│  │  API call)   │       │          │         │                              │
+│  └──────────────┘       │          │         │                              │
 │           ┌─────────────┴┐ ┌───────┴─────┐ ┌─┴───────────┐                  │
 │           │ CLI (REPL)   │ │ API (HTTP)  │ │ Clock       │                  │
 │           │ human-in-    │ │ shell writes│ │ scheduled   │                  │
