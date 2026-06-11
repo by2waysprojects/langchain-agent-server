@@ -13,7 +13,8 @@ You bring your project code. This framework provides:
 5. **A clock scheduler** that runs agent tasks on a cron schedule -- no human needed.
 6. **Multi-step plan execution** -- the agent can break complex tasks into sequential or parallel steps.
 7. **An HTTP API** for programmatic access from frontends, bots, CI/CD, and webhooks.
-8. **A container** that runs as a non-root user with everything pre-installed.
+8. **Token usage tracking** -- records input/output tokens per API call in SQLite, queryable via API.
+9. **A container** that runs as a non-root user with everything pre-installed.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -28,7 +29,12 @@ You bring your project code. This framework provides:
 │  │ Your project │<───│  ├─ MemoryTool ──────────┼─>│ ├──────────────────┤ │ │
 │  │ code + CLIs  │    │  └─ Your custom tools    │  │ │ memory           │ │ │
 │  └──────────────┘    └──┬──────────┬─────────┬──┘  │ │ (key-value)      │ │ │
-│                         │          │         │     └─└──────────────────┘─┘ │
+│                         │          │         │     │ ├──────────────────┤ │ │
+│  ┌──────────────┐       │          │         │     │ │ token_usage      │ │ │
+│  │ TokenTracker │───────┼──────────┼─────────┼────>│ │ (per-call stats) │ │ │
+│  │ (per LLM     │       │          │         │     └─└──────────────────┘─┘ │
+│  │  API call)   │       │          │         │                               │
+│  └──────────────┘       │          │         │                               │
 │           ┌─────────────┴┐ ┌───────┴─────┐ ┌─┴───────────┐                  │
 │           │ CLI (REPL)   │ │ API (HTTP)  │ │ Clock       │                  │
 │           │ human-in-    │ │ shell writes│ │ scheduled   │                  │
@@ -279,6 +285,20 @@ curl http://localhost:8080/health
 curl http://localhost:8080/memory
 ```
 
+**Token usage stats:**
+
+```bash
+# Lifetime totals + daily breakdown (last 7 days)
+curl http://localhost:8080/token-usage
+
+# Filter by session or thread
+curl "http://localhost:8080/token-usage?session_id=batch-a1b2c3d4"
+curl "http://localhost:8080/token-usage?thread_id=step-e5f6g7h8"
+
+# Adjust daily breakdown window
+curl "http://localhost:8080/token-usage?days=30"
+```
+
 Write operations (commands requiring confirmation like `git push`) are automatically rejected via the API -- there is no human to approve them. Use the CLI for those.
 
 To disable the API entirely, set `AGENT_HTTP_ENABLED=false`.
@@ -343,6 +363,23 @@ Both tables live in the same SQLite file (`checkpoints.sqlite`).
 
 The purge runs automatically at agent startup. No manual cleanup is needed.
 
+## Token Usage Tracking
+
+Every LLM API call is automatically recorded in a `token_usage` SQLite table (same file as checkpoints and memory). Each record captures:
+
+| Field | Description |
+|-------|-------------|
+| **timestamp** | When the call was made (UTC) |
+| **session_id** | Batch session grouping (e.g. `batch-a1b2c3d4`) |
+| **thread_id** | LangGraph thread that made the call |
+| **model** | Model identifier |
+| **input_tokens** | Tokens sent to the model |
+| **output_tokens** | Tokens received from the model |
+
+The `GET /token-usage` endpoint returns aggregated stats: lifetime totals, today's totals, per-day breakdown, and recent batch sessions. Filter by `session_id` or `thread_id` with query params.
+
+Batch executions (via `run_batch`) automatically group all their steps under a single `session_id`, so you can see the total token cost of a multi-step plan in one query.
+
 ## Execution Model
 
 The framework has two ways of running tasks:
@@ -397,6 +434,9 @@ langchain-agent-server/
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   └── store.py             # Key-value store (SQLite)
+│   ├── token_usage/
+│   │   ├── __init__.py
+│   │   └── tracker.py           # LLM token consumption tracker (SQLite)
 │   └── tools/
 │       ├── __init__.py
 │       ├── shell_policy.py      # Whitelist + confirm + blocked patterns
