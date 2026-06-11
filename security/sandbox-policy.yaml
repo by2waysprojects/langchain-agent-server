@@ -1,0 +1,72 @@
+# Sandbox security policy for the agent container.
+#
+# This declarative policy defines what the agent process can access.
+# The supervisor reads this file at startup and enforces it via:
+#   - Landlock (filesystem restrictions)
+#   - Seccomp profile (syscall restrictions, applied by Podman)
+#   - Linux capabilities (dropped by Podman)
+#
+# Static sections (filesystem, process) are locked at agent startup.
+# Network policy is reserved for a future external proxy component.
+
+filesystem:
+  # Paths the agent can read and write
+  read_write:
+    - /app/workspace
+    - /tmp
+
+  # Paths the agent can read but not modify
+  read_only:
+    - /app/agent_server
+    - /app/AGENTS.md
+    - /app/STARTUP.md
+    - /usr/bin
+    - /usr/local/bin
+    - /usr/local/lib
+    - /usr/lib
+    - /lib
+    - /lib64
+    - /etc/ssl/certs
+    - /etc/ca-certificates
+    - /etc/resolv.conf
+    - /etc/hosts
+    - /etc/nsswitch.conf
+    - /etc/passwd
+    - /etc/group
+    - /proc/self
+    - /dev/null
+    - /dev/zero
+    - /dev/urandom
+    - /dev/random
+
+  # Paths where binaries can be executed
+  execute:
+    - /usr/bin
+    - /usr/local/bin
+
+process:
+  # Run as unprivileged user
+  user: agentuser
+  group: agentuser
+
+  # All capabilities dropped
+  capabilities: []
+
+  # Seccomp profile path (relative to project root)
+  seccomp_profile: security/seccomp-profile.json
+
+  # No new privileges flag
+  no_new_privileges: true
+
+# Network policy is intentionally omitted here.
+# Network egress control will be handled by an external proxy component
+# (sidecar container or host-level firewall) in a future iteration.
+# network:
+#   # Example future structure:
+#   egress:
+#     - host: "api.github.com"
+#       port: 443
+#       methods: ["GET"]
+#     - host: "api.anthropic.com"
+#       port: 443
+#       methods: ["POST"]

@@ -305,27 +305,87 @@ To disable the API entirely, set `AGENT_HTTP_ENABLED=false`.
 
 ## Security Model
 
-The shell uses defense-in-depth with two enforcement layers:
+The agent uses **defense-in-depth** with four enforcement layers, from kernel to application:
+
+| Layer | Mechanism | Enforcement | Bypassable? |
+|-------|-----------|-------------|-------------|
+| **Seccomp** | Kernel syscall filter | Applied by Podman at container creation | No -- kernel rejects before execution |
+| **Landlock** | Kernel filesystem ACL | Activated at process startup (irreversible) | No -- kernel rejects even for root |
+| **Container** | Podman namespaces + non-root + read-only rootfs | Applied by Podman | No -- kernel-level isolation |
+| **Application** | `shell_policy.py` whitelist + blocklist | Checked in Python before subprocess | Provides useful feedback to the LLM |
+
+### Kernel Layer: Seccomp (syscall filtering)
+
+The custom seccomp profile (`security/seccomp-profile.json`) blocks dangerous syscalls:
+
+- **Raw sockets** -- only AF_INET, AF_INET6, AF_UNIX, AF_NETLINK allowed
+- **ptrace / process_vm_readv** -- blocks cross-process memory access
+- **mount / pivot_root / chroot** -- blocks filesystem escape
+- **init_module / bpf** -- blocks kernel instrumentation
+- **unshare / setns** -- blocks namespace manipulation
+- **reboot / kexec_load** -- blocks system administration
+
+Everything not explicitly allowed is denied (`defaultAction: SCMP_ACT_ERRNO`).
+
+### Kernel Layer: Landlock (filesystem restriction)
+
+At process startup, Landlock activates kernel-enforced path restrictions defined in `security/sandbox-policy.yaml`:
+
+| Path | Access |
+|------|--------|
+| `/app/workspace` | read + write |
+| `/tmp` | read + write |
+| `/usr/bin`, `/usr/local/bin` | read + execute |
+| `/app/agent_server` | read only |
+| `/etc/ssl/certs`, `/etc/resolv.conf` | read only |
+| Everything else | **blocked** |
+
+Once active, these restrictions apply to all code (Python, shell commands, child processes) and cannot be lifted -- not even by root.
+
+### Container Layer: Podman hardening
+
+The `scripts/run-agent.sh` script applies:
+
+```bash
+--security-opt seccomp=security/seccomp-profile.json
+--security-opt no-new-privileges
+--cap-drop ALL
+--read-only
+--user agentuser:agentuser
+```
+
+### Application Layer: shell_policy.py
+
+The shell tool validates commands before execution:
 
 | Tier | Behavior | Examples |
 |------|----------|---------|
 | **Free** | Execute immediately | `git log`, `curl`, `grep`, `jq` |
 | **Confirm** | Agent asks user, then retries with `CONFIRMED:` prefix | `git push`, `gh pr create` |
+| **Blocked** | Rejected with reason | `sudo`, `rm`, `docker`, `netcat` |
 
-**Everything else is blocked.** Any binary not in the whitelist is rejected before execution. On top of that, blocked patterns (regex) catch dangerous constructs even inside allowed commands:
+Even if this layer fails, Landlock and seccomp block the operation at the kernel level.
 
-- `sudo`, `su` -- privilege escalation
-- `rm` -- use file management tools instead
-- `curl | bash`, `wget | sh` -- pipe-to-shell execution
-- `docker`, `podman --privileged` -- container escape
-- `apt`, `yum`, `dnf` -- system package managers
-- `netcat`, `ncat`, `socat` -- reverse shell / exfiltration
-- `kill -9`, `killall`, `pkill` -- process control
-- `/etc/shadow`, `.ssh/` -- credential access
-- `169.254.169.254`, `metadata.google.internal` -- cloud metadata SSRF
-- `chmod` with setuid/setgid, `mkfs`, `fdisk`, `mount` -- system manipulation
+### Configuration
 
-All file operations go through LangChain's `FileManagementToolkit`, sandboxed to the workspace directory. The container runs as a non-root user (`agentuser`).
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_SECURITY_ENABLED` | `true` | Enable/disable Landlock (set `false` for local dev without container) |
+| `AGENT_SECURITY_STRICT` | `false` | If `true`, fail startup when Landlock cannot activate |
+| `AGENT_SECURITY_POLICY` | `security/sandbox-policy.yaml` | Custom policy path |
+
+### Running with security
+
+```bash
+# Build
+./scripts/build-agent.sh
+
+# Run with full kernel hardening
+./scripts/run-agent.sh
+
+# Run without kernel security (local development)
+AGENT_SECURITY_ENABLED=false python -m agent_server
+```
 
 ## Memory Model
 
@@ -409,6 +469,9 @@ This means CLI and Clock tasks can be multi-step: the LLM decides whether a task
 | `AGENT_HTTP_PORT` | No | `8080` | Port for the HTTP API server |
 | `AGENT_WORKSPACE_DIR` | No | `/app/workspace` | Sandboxed file root |
 | `AGENT_MAX_ITERATIONS` | No | `50` | Max reasoning loops |
+| `AGENT_SECURITY_ENABLED` | No | `true` | Enable kernel security (Landlock). Set `false` for local dev. |
+| `AGENT_SECURITY_STRICT` | No | `false` | Fail startup if security cannot activate |
+| `AGENT_SECURITY_POLICY` | No | `security/sandbox-policy.yaml` | Path to filesystem policy |
 
 ## Project Structure
 
@@ -416,7 +479,7 @@ This means CLI and Clock tasks can be multi-step: the LLM decides whether a task
 langchain-agent-server/
 ├── agent_server/
 │   ├── __init__.py
-│   ├── __main__.py              # python -m agent_server
+│   ├── __main__.py              # python -m agent_server (activates security, then runs)
 │   ├── config.py                # Pydantic settings from env vars
 │   ├── agent.py                 # Agent factory (LangChain + Claude)
 │   ├── api/
@@ -434,6 +497,10 @@ langchain-agent-server/
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   └── store.py             # Key-value store (SQLite)
+│   ├── security/
+│   │   ├── __init__.py
+│   │   ├── landlock.py          # Kernel filesystem sandboxing (Landlock syscalls)
+│   │   └── supervisor.py        # Security activation orchestrator
 │   ├── token_usage/
 │   │   ├── __init__.py
 │   │   └── tracker.py           # LLM token consumption tracker (SQLite)
@@ -442,6 +509,12 @@ langchain-agent-server/
 │       ├── shell_policy.py      # Whitelist + confirm + blocked patterns
 │       ├── filesystem.py        # Sandboxed file management
 │       └── memory.py            # MemoryTool for the agent
+├── security/
+│   ├── seccomp-profile.json     # Kernel syscall filter (applied by Podman)
+│   └── sandbox-policy.yaml      # Declarative filesystem policy (read by Landlock)
+├── scripts/
+│   ├── build-agent.sh           # Build container image with Podman
+│   └── run-agent.sh             # Run with full kernel security hardening
 ├── examples/
 │   ├── workspace-monitor/       # Periodic file scanning example
 │   ├── ticket-queue/            # Concurrent ticket management example

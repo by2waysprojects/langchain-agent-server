@@ -33,6 +33,9 @@ COPY agent_server/ agent_server/
 COPY AGENTS.md .
 COPY STARTUP.md .
 
+# ── Security policy ────────────────────────────────────────────────
+COPY security/ security/
+
 # ── Your project code ──────────────────────────────────────────────
 # Copy any project-specific code, scripts, or data the agent needs:
 #
@@ -53,6 +56,7 @@ USER agentuser
 ENV AGENT_WORKSPACE_DIR=/app/workspace
 ENV AGENT_INSTRUCTIONS_PATH=/app/AGENTS.md
 ENV AGENT_STARTUP_PROMPT_PATH=/app/STARTUP.md
+ENV AGENT_SECURITY_ENABLED=true
 ENV PYTHONUNBUFFERED=1
 
 ENTRYPOINT ["python", "-m", "agent_server"]

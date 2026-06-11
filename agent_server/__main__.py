@@ -2,6 +2,8 @@
 
 Builds a single agent and starts all available interfaces:
 
+- **Security supervisor**: activates kernel protections (Landlock, NO_NEW_PRIVS)
+  before any agent code runs.
 - **API**: runs in a background thread (uvicorn) on ``AGENT_HTTP_PORT``.
 - **Clock**: runs in a background thread if scheduled tasks are found
   in the ``## Scheduled Tasks`` section of AGENTS.md.
@@ -9,6 +11,7 @@ Builds a single agent and starts all available interfaces:
 """
 
 import logging
+import os
 import threading
 
 from agent_server.agent import create_agent_from_settings
@@ -16,6 +19,29 @@ from agent_server.cli.main import run_cli
 from agent_server.clock.main import start_clock
 
 logger = logging.getLogger(__name__)
+
+
+def _activate_security() -> None:
+    """Activate kernel-level security before the agent starts.
+
+    Reads AGENT_SECURITY_ENABLED (default: "true") to control activation.
+    Set to "false" or "0" to disable (e.g., during local development).
+    """
+    enabled = os.environ.get("AGENT_SECURITY_ENABLED", "true").lower()
+    if enabled in ("false", "0", "no"):
+        logger.info("Kernel security disabled via AGENT_SECURITY_ENABLED=false")
+        return
+
+    from agent_server.security.supervisor import activate_security
+
+    policy_path = os.environ.get("AGENT_SECURITY_POLICY")
+    strict = os.environ.get("AGENT_SECURITY_STRICT", "").lower() in ("1", "true", "yes")
+
+    status = activate_security(policy_path=policy_path, best_effort=not strict)
+
+    for key, value in status.items():
+        marker = "ACTIVE" if value else "inactive"
+        logger.info("Security: %-25s %s", key, marker)
 
 
 def _start_api(agent, settings, *, memory_store=None):
@@ -57,4 +83,5 @@ def main() -> None:
         stop_event.set()
 
 
+_activate_security()
 main()
