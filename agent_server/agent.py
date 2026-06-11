@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import uuid
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,9 +28,22 @@ logger = logging.getLogger(__name__)
 
 from agent_server.config import AgentSettings
 from agent_server.memory import MemoryStore
+from agent_server.token_usage import TokenTracker
 from agent_server.tools.filesystem import get_file_tools
 from agent_server.tools.memory import MemoryTool
 from agent_server.tools.shell_policy import SecureShellTool
+
+_token_tracker: TokenTracker | None = None
+
+
+def set_token_tracker(tracker: TokenTracker) -> None:
+    """Set the global token tracker instance (called once at startup)."""
+    global _token_tracker
+    _token_tracker = tracker
+
+
+def get_token_tracker() -> TokenTracker | None:
+    return _token_tracker
 
 
 def load_system_prompt(path: str | Path) -> str:
@@ -60,7 +74,7 @@ def build_tools(settings: AgentSettings, memory_store: MemoryStore) -> list[Base
 # ---------------------------------------------------------------------------
 
 class _ChatAnthropicSSL(ChatAnthropic):
-    """ChatAnthropic with configurable SSL verification."""
+    """ChatAnthropic with configurable SSL verification and token tracking."""
 
     ssl_verify: bool | str = True
 
@@ -77,6 +91,11 @@ class _ChatAnthropicSSL(ChatAnthropic):
             **self._client_params,
             http_client=httpx.AsyncClient(verify=self.ssl_verify),
         )
+
+    def _create(self, payload: dict) -> anthropic.types.Message:
+        msg = super()._create(payload)
+        _record_usage_from_message(msg, payload.get("model", self.model))
+        return msg
 
 
 # ---------------------------------------------------------------------------
@@ -125,10 +144,14 @@ class _ChatAnthropicProxy(ChatAnthropic):
                 time.sleep(delay)
                 continue
             resp.raise_for_status()
-            return anthropic.types.Message(**resp.json())
+            msg = anthropic.types.Message(**resp.json())
+            _record_usage_from_message(msg, model)
+            return msg
 
         resp.raise_for_status()
-        return anthropic.types.Message(**resp.json())
+        msg = anthropic.types.Message(**resp.json())
+        _record_usage_from_message(msg, model)
+        return msg
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +268,11 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
     checkpointer = SqliteSaver(cp_conn)
     checkpointer.setup()
     _purge_old_checkpoints(cp_conn, settings.agent_memory_ttl_days)
+
+    tk_conn = sqlite3.connect(settings.agent_checkpoints_path, check_same_thread=False)
+    token_tracker = TokenTracker(tk_conn)
+    set_token_tracker(token_tracker)
+
     tools = build_tools(settings, memory_store)
     agent = build_agent(
         tools=tools,
@@ -253,6 +281,30 @@ def create_agent_from_settings(settings: AgentSettings | None = None):
         checkpointer=checkpointer,
     )
     return agent, settings, system_prompt, memory_store
+
+
+def _record_usage_from_message(
+    msg: anthropic.types.Message, model: str
+) -> None:
+    """Extract token counts from an Anthropic Message and record them."""
+    tracker = _token_tracker
+    if tracker is None:
+        return
+    usage = getattr(msg, "usage", None)
+    if usage is None:
+        return
+    input_t = getattr(usage, "input_tokens", 0)
+    output_t = getattr(usage, "output_tokens", 0)
+    if input_t or output_t:
+        tracker.record(
+            thread_id=getattr(_current_thread_id, "id", "unknown"),
+            model=model,
+            input_tokens=input_t,
+            output_tokens=output_t,
+        )
+
+
+_current_thread_id: threading.local = threading.local()
 
 
 def invoke_agent(
@@ -268,6 +320,9 @@ def invoke_agent(
     as context.  Conversation history is handled automatically by LangGraph's
     SQLite checkpointer.
     """
+    thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+    _current_thread_id.id = thread_id
+
     enriched = list(messages)
 
     if memory_store:

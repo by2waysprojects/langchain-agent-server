@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock
 
-from agent_server.agent import invoke_agent
+from agent_server.agent import get_token_tracker, invoke_agent
 from agent_server.memory import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -110,10 +110,15 @@ def run_batch(
     executed in parallel or sequentially based on the plan's parallel flag.
     Otherwise the task was handled directly by the first invocation.
     """
+    session_id = f"batch-{uuid.uuid4().hex[:8]}"
+    tracker = get_token_tracker()
+    if tracker:
+        tracker.set_session(session_id)
+
     thread_id = f"invoke-{uuid.uuid4().hex[:8]}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    logger.info("Executing: %s", instruction[:50])
+    logger.info("Executing: %s (session=%s)", instruction[:50], session_id)
     if verbose:
         print(f"  [{instruction[:60]}]...")
 
@@ -141,6 +146,8 @@ def run_batch(
 
     plan = _try_parse_plan(resp)
     if not plan:
+        if tracker:
+            tracker.clear_session()
         if verbose and resp:
             print(f"\n{resp}")
         return
@@ -150,10 +157,14 @@ def run_batch(
         print(f"  Executing plan: {len(plan.tasks)} steps ({mode})")
     logger.info("Execution plan: %d steps (%s)", len(plan.tasks), mode)
 
-    if plan.parallel:
-        _execute_parallel(agent, plan.tasks, memory_store, verbose=verbose)
-    else:
-        _execute_sequential(agent, plan.tasks, memory_store, verbose=verbose)
+    try:
+        if plan.parallel:
+            _execute_parallel(agent, plan.tasks, memory_store, verbose=verbose)
+        else:
+            _execute_sequential(agent, plan.tasks, memory_store, verbose=verbose)
+    finally:
+        if tracker:
+            tracker.clear_session()
 
 
 def _execute_sequential(

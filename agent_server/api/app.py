@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from agent_server.agent import invoke_agent
+from agent_server.agent import get_token_tracker, invoke_agent
 from agent_server.memory import MemoryStore
 from agent_server.tools.shell_policy import reject_writes_context
 
@@ -84,5 +84,33 @@ def create_app(agent, *, memory_store: MemoryStore | None = None) -> FastAPI:
             )
             for key, entry in entries.items()
         ]
+
+    @app.get("/token-usage")
+    def token_usage(
+        days: int = 7,
+        session_id: str | None = None,
+        thread_id: str | None = None,
+    ):
+        """Return token consumption stats.
+
+        Query params:
+        - ``days``: number of days for the daily breakdown (default 7)
+        - ``session_id``: filter totals to a specific batch session
+        - ``thread_id``: filter totals to a specific thread
+        """
+        tracker = get_token_tracker()
+        if tracker is None:
+            return {"error": "Token tracking is not enabled"}
+
+        result: dict = {"totals": tracker.totals(), "today": tracker.today()}
+
+        if session_id:
+            result["session"] = tracker.by_session(session_id)
+        if thread_id:
+            result["thread"] = tracker.by_thread(thread_id)
+
+        result["daily"] = tracker.daily_breakdown(days)
+        result["recent_sessions"] = tracker.recent_sessions()
+        return result
 
     return app
